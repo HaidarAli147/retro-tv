@@ -1,0 +1,110 @@
+ENCLOSURE - CARPENTER CUT SHEET (final)
+All dimensions in centimeters unless noted. Material thickness assumed: 0.3cm (3mm).
+Origin for every "from left" / "from bottom" measurement is the bottom-left corner of
+that panel as you look at it from outside the box.
+
+=====================================================================
+1) OVERALL BOX
+=====================================================================
+Outer size:      38.4 (W)  x  26.0 (H)  x  21.5 (D) cm
+Wall thickness:  0.3 cm
+Build style:     one-piece frame (front + back + both side walls glued/joined as a
+                 single open-top/open-bottom box), plus a separate top panel,
+                 bottom panel, and rear slide-in backplate/cover.
+
+=====================================================================
+2) FRONT PANEL (part of the one-piece frame)
+=====================================================================
+a) Screen opening (rectangular, sharp corners)
+   Size:            31.5 x 17.9 cm
+   Position:        centered left-right (3.45 cm margin on each side)
+                     1.5 cm down from the top edge of the panel
+                     6.6 cm up from the bottom edge of the panel
+
+b) Joystick hole (round)
+   Diameter:        2.7 cm
+   Center:          15.2 cm from left edge, 3.0 cm up from bottom edge
+
+c) Volume knob hole (round)
+   Diameter:        0.5 cm
+   Center:          19.2 cm from left edge (panel horizontal center), 3.0 cm up from bottom
+
+d) Power button hole (oval)
+   Size:            0.5 cm (wide) x 0.7 cm (tall)
+   Center:          23.2 cm from left edge, 3.0 cm up from bottom
+
+   NOTE - joystick vs. mounting screws: this 2.7cm hole was sized to the number you
+   gave me. If your joystick module's screw-mount spacing is close to 1.95cm, the
+   screw holes will land inside the main hole and have no material to bite into.
+   Please confirm the real screw spacing on the joystick before this is cut - it's
+   the one measurement on this sheet I have not been able to verify.
+
+e) Speaker grilles - TWO, one on each side of the control cluster (zones of
+   narrow horizontal slots)
+   Zone size (each):   10.0 x 4.4 cm
+   Left grille center:  8.2 cm from left edge, 3.2 cm up from bottom
+   Right grille center: 30.2 cm from left edge, 3.2 cm up from bottom
+   Slots:           0.3cm tall each, 0.45cm center-to-center spacing, 0.8cm clear
+                     margin left/right inside each zone
+   Clearance:       left grille sits 0.65cm clear of the joystick hole edge
+
+   NOTE - placeholder size: no exact speaker driver diameter was given, so each
+   grille is sized generously to fit a common small speaker. If you know the
+   actual driver's diameter, tell me and I will resize these before they're cut.
+
+=====================================================================
+3) BACK PANEL (part of the one-piece frame)
+=====================================================================
+a) HDMI/AV/VGA/USB connector opening (rectangular, matches the driver board's
+   port strip)
+   Size:            18.3 x 4.0 cm
+   Position:        centered left-right (10.05 cm margin each side)
+                     1.8 cm up from the bottom edge
+
+b) Back ventilation - two pairs of slot columns flanking the connector opening
+   Slot size:       0.4 x 5.0 cm each
+   Columns (x from left edge):   4.0 cm, 6.5 cm  |  29.5 cm, 32.0 cm
+   Rows (z, up from bottom):     9.0, 10.5, 12.0, 13.5, 15.0, 16.5, 18.0, 19.5, 21.0 cm
+   (9 slots per column, 4 columns = 36 slots total)
+
+=====================================================================
+4) SIDE WALLS (both sides, part of the one-piece frame, mirrored)
+=====================================================================
+Vent slots:      0.6 x 5.0 cm each
+Position (y from front edge):   3.0, 9.0, 14.8 cm
+Position (z, up from bottom):   20.5, 22.0, 23.5 cm
+(3 slots per side wall)
+
+=====================================================================
+5) TOP PANEL (separate piece, 38.4 x 21.5 cm)
+=====================================================================
+Vent grid:       0.4 x 6.0 cm slots, 4 columns x 9 rows = 36 slots
+Columns (x from left edge):     4.95, 12.45, 19.95, 27.45 cm
+Rows (y from front edge):       8.0, 9.2, 10.4, 11.6, 12.8, 14.0, 15.2, 16.4, 17.6 cm
+
+=====================================================================
+6) BOTTOM PANEL (separate piece, 38.4 x 21.5 cm)
+=====================================================================
+Solid - Pi and Arduino mounting standoffs only, no cuts through the panel face.
+
+=====================================================================
+7) REAR BACKPLATE / SLIDE-IN COVER (separate piece)
+=====================================================================
+Flat cover plate sized to slide into the frame's rear channel; no additional
+cuts.
+
+=====================================================================
+8) SMALL INTERNAL COVER PLATES (2x, separate small pieces, mount from inside
+   the front panel over the knob and button holes)
+=====================================================================
+Knob cover plate:     2.5 x 2.5 cm, 0.3 cm thick, 0.5cm center hole,
+                       4x 0.2cm screw holes near the corners
+Button cover plate:   2.5 x 2.7 cm, 0.3 cm thick, 0.5x0.7cm oval center hole,
+                       4x 0.2cm screw holes near the corners
+
+=====================================================================
+OPEN ITEMS BEFORE CUTTING
+=====================================================================
+1. Joystick module's real mounting-screw spacing (see note in section 2b).
+2. Speaker driver's real diameter (see note in section 2e).
+Everything else on this sheet is final.

@@ -1,0 +1,6 @@
+node_modules/
+__pycache__/
+*.pyc
+# never commit Wi-Fi / Pi Connect secrets from SD-card backups
+network-config
+user-data

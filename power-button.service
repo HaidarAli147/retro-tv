@@ -1,0 +1,14 @@
+[Unit]
+Description=Hold-to-shutdown power button on GPIO3
+After=multi-user.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/rpi-bridge/power_button.py
+Restart=always
+RestartSec=2
+User=root
+
+[Install]
+WantedBy=multi-user.target

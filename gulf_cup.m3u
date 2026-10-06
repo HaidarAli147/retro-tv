@@ -1,0 +1,17 @@
+#EXTM3U
+# Gulf Cup 27 - Jeddah, 23 Sept to 6 Oct 2026
+# Confirmed rights holders: Al Kass, Oman Sports, Shasha
+# Also named by the Gulf Football Federation: Abu Dhabi Sports, Kuwait Sports
+
+#EXTINF:-1 group-title="Gulf Cup",Oman Sports TV
+https://partneta.cdn.mgmlcdn.com/omsport/smil:omsport.stream.smil/chunklist.m3u8
+#EXTINF:-1 group-title="Gulf Cup",KTV Sport (Kuwait)
+https://kwtspta.cdn.mangomolo.com/sp/smil:sp.stream.smil/chunklist.m3u8
+#EXTINF:-1 group-title="Gulf Cup",KTV Sport Plus (Kuwait)
+https://kwtsplta.cdn.mangomolo.com/spl/smil:spl.stream.smil/chunklist.m3u8
+#EXTINF:-1 group-title="Gulf Cup",Alkass Three (Qatar)
+https://streamer2.qna.org.qa/148161470_live/148161470_296.sdp/playlist.m3u8
+#EXTINF:-1 group-title="Gulf Cup",Bahrain Sports 1
+https://5c7b683162943.streamlock.net/live/ngrp:sportsone_all/playlist.m3u8
+#EXTINF:-1 group-title="Gulf Cup",Bahrain Sports 2
+https://5c7b683162943.streamlock.net/live/ngrp:bahrainsportstwo_all/playlist.m3u8

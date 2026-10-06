@@ -1,0 +1,39 @@
+Subject: Cut sheet for custom TV enclosure - measurements attached
+
+Hi,
+
+Attached are the drawings and full cut sheet for a wooden/acrylic enclosure I need
+built. It's a box for a 14" laptop panel + driver board, with a joystick, volume
+knob, and power button on the front, and a rear connector cutout for HDMI/AV/VGA/USB.
+
+Overall box: 38.4 x 26.0 x 21.5 cm (W x H x D), 0.3 cm wall thickness.
+
+It's a 6-piece build:
+1. One-piece frame - front, back, and both side walls joined into a single
+   open-top/open-bottom box (all the panel cutouts below are on this piece)
+2. Top panel (38.4 x 21.5 cm, with a ventilation slot grid)
+3. Bottom panel (38.4 x 21.5 cm, solid)
+4. Rear slide-in backplate/cover
+5. Small internal knob cover plate (2.5 x 2.5 cm)
+6. Small internal button cover plate (2.5 x 2.7 cm)
+
+Full measurements, hole sizes, and positions for every panel are in the attached
+cut sheet (carpenter_layout.txt) and the reference photos (drill_front.png /
+drill_back.png show the cuts highlighted in red; preview_assembly.png and
+preview_exploded.png show the finished look).
+
+Two things I still need to confirm before you cut, both flagged in the cut sheet:
+1. The joystick hole is 2.7 cm round - if the joystick's own mounting screws are
+   closer than about 2cm apart center-to-center, the screw holes would land
+   inside the main hole. I'll confirm the exact screw spacing shortly.
+2. There are two speaker grilles (10.0 x 4.4 cm each, one on each side of the
+   joystick/knob/button row) - both sized generously as a placeholder since I
+   don't have the exact speaker diameter yet.
+
+Everything else on the sheet is final and ready to cut.
+
+Let me know if anything is unclear or if you'd like the drawings in a different
+format.
+
+Thanks,
+[Your name]

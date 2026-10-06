@@ -1,0 +1,14 @@
+[Unit]
+Description=Arduino controller bridge (joystick, volume knob, power button)
+After=multi-user.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/rpi-bridge/rpi_bridge.py
+Restart=always
+RestartSec=2
+User=root
+
+[Install]
+WantedBy=multi-user.target
