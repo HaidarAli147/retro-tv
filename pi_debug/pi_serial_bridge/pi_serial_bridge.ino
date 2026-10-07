@@ -4,9 +4,10 @@
 // prep_usb_serial.ps1 -Mode linux both use 9600).
 #include <SoftwareSerial.h>
 
-SoftwareSerial pi(10, 11);  // RX = pin 10 (from Pi), TX = pin 11 (unused)
+SoftwareSerial pi(10, 11);  // RX = pin 10 (from Pi, pull-up on), TX = pin 11 (unused)
 
 unsigned long bytes = 0;
+unsigned long lastByte = 0;
 unsigned long lastReport = 0;
 
 void setup() {
@@ -19,10 +20,17 @@ void loop() {
   while (pi.available()) {
     Serial.write(pi.read());
     bytes++;
+    lastByte = millis();
   }
-  // until anything arrives, say so every 10 s so a silent Pi is obvious
-  if (bytes == 0 && millis() - lastReport >= 10000) {
-    lastReport = millis();
-    Serial.println(F("[bridge] nothing from the Pi yet"));
+  // every 10 s of silence, say so and show the line level:
+  // HIGH = idle line or no wire (pull-up), LOW = wire on GND or the Pi pin held low
+  unsigned long now = millis();
+  if (now - lastByte >= 10000 && now - lastReport >= 10000) {
+    lastReport = now;
+    Serial.print(F("\r\n[bridge] nothing new for 10 s, "));
+    Serial.print(bytes);
+    Serial.print(F(" bytes so far, pin 10 is "));
+    Serial.println(digitalRead(10) ? F("HIGH (idle line, or no wire)")
+                                   : F("LOW (wire on a GND pin, or the Pi pin is held low)"));
   }
 }
