@@ -1,19 +1,24 @@
-// Bare-metal Raspberry Pi 4 test v3: is our code running, which header pin
-// carries text, does the PL011 UART work, and is the first 512 MB of RAM OK.
+// Bare-metal Raspberry Pi 4 test v3.1: is our code running, which header pin
+// carries text, does the PL011 UART work, is the first 512 MB of RAM OK.
 //
-// 1. ACT LED blinks once a second from the moment the code starts.
-// 2. Every second it sends "[BB pin N] PI ALIVE k" bit-banged (GPIO driven
-//    directly, timed by the ARM generic timer, no UART involved) on pins
-//    7, 8, 10, 11 and 12, one pin at a time, so the text says which pin the
-//    wire is on. Then "[UART pin 8] PI ALIVE k" from the PL011 on pin 8.
-//    UART waits time out, so a dead UART clock can't hang the test.
-// 3. After 5 of those, RAM test 0x00400000-0x20000000 (LED solid on),
-//    reported bit-banged on all five pins, then the beacons repeat forever
-//    with the result. LED: 1 blink/s = RAM OK, 1 + 4 quick blinks/s = FAIL.
-// Position independent: runs wherever the firmware loads it (0x80000 or
-// 0x200000) and prints the load address. 9600 8N1 by default (-DBAUD=...).
+// LED (ACT, green) timeline once the firmware hands over:
+//   solid ON 2 s (switched on by the first instructions, before any timer use)
+//   -> 5 rounds of one short flash per second
+//   -> RAM test: LED toggles at every 64 MB mark (slow, irregular on/off)
+//   -> one short flash per second forever (RAM OK), or flash + 4 quick (RAM FAIL).
+// Text, 9600 8N1:
+//   every round "[BB pin N] PI ALIVE k" bit-banged (GPIO driven directly, no UART)
+//   on header pins 8, 7, 10, 11, 12 one at a time, so the text names the pin the
+//   wire is on; then "[UART pin 8] PI ALIVE k" from the PL011. UART waits time
+//   out once ("UART STUCK") and are skipped afterwards, so nothing can hang.
+// Timing uses the ARM generic timer; if its counter does not move, the BCM
+// system timer (1 MHz) is used instead and the header says so.
+// Position independent (firmware may load it at 0x80000 or 0x200000); the
+// header prints the load address, device-tree address, exception level, timer.
 // Build: build.sh (PERI_BASE 0xFE000000 = Pi 4, 0x3F000000 = Pi 3 for QEMU;
-// -DTRACE prints every pin-8 bit level on the UART for the QEMU check).
+// test-only flags: -DTRACE prints every pin-8 bit level on the UART,
+// -DFORCE_ST forces the system timer, -DSTUCK_TEST fakes a stuck UART,
+// -DRAMFAIL_TEST fakes a RAM mismatch).
 
 #ifndef PERI_BASE
 #define PERI_BASE 0xFE000000
@@ -23,6 +28,7 @@
 #endif
 // PL011 divisor from the 48 MHz UART clock: 48e6 / (16 * BAUD) = IBRD + FBRD/64
 #define DIV64 ((48000000 * 4 + BAUD / 2) / BAUD)
+#define ST_BASE   (PERI_BASE + 0x3000)  // BCM system timer: CLO +4, CHI +8
 #define GPIO      (PERI_BASE + 0x200000)
 #define UART0     (PERI_BASE + 0x201000)
 #define GPFSEL0   0x00
@@ -33,8 +39,16 @@
 #define GPCLR0    0x28
 #define GPCLR1    0x2c
 #define GPLEV0    0x34
+#define GPLEV1    0x38
 #define UART_DR   0x00
 #define UART_FR   0x18
+#ifdef STUCK_TEST
+#define FR_TXFF   7                     // TXFE reads 1 when idle: looks "full" forever
+#define FR_BUSY   7
+#else
+#define FR_TXFF   5
+#define FR_BUSY   3
+#endif
 #define M7   (1 << 4)               // header pin 7  = GPIO4
 #define M8   (1 << 14)              // header pin 8  = GPIO14 (TXD)
 #define M10  (1 << 15)              // header pin 10 = GPIO15 (RXD)
@@ -48,40 +62,97 @@
 #define BEACONS   5
 
 // Global registers:
+//   x18 UART state (0 ok, 1 stuck), x19 (main only) device-tree address,
 //   x20 GPIO base, x21 UART base, w22 ACT LED bit (GPIO42 in bank 1),
-//   x23 timer ticks per second, x27 ticks per serial bit,
-//   x28 output target for putc (0 = PL011, else GPIO mask to bit-bang),
-//   x24 RAM state (0 untested, 1 OK, 2 FAIL), x25 beacon counter,
-//   x18 UART state (0 ok, 1 stuck). Helpers use x0-x17 as scratch.
+//   x23 timer ticks per second, x24 RAM state (0 untested, 1 OK, 2 FAIL),
+//   x25 beacon counter, x27 ticks per serial bit,
+//   x28 putc target (0 = PL011, else GPIO mask to bit-bang),
+//   x29 timer: 0 = ARM generic timer, else system timer base (never written
+//       after setup; helpers save/restore it with x30).
+// Helpers use x0, x8-x17 as scratch and leave x1-x7 alone (ramtest relies on it).
+
+// NOW xd: current time in timer ticks (64-bit). wt/wu are scratch.
+        .macro NOW xd, wd, xt, wt, wu
+        cbnz    x29, 7771f
+        mrs     \xd, cntpct_el0
+        b       7772f
+7771:   ldr     \wt, [x29, #8]          // CHI
+        ldr     \wd, [x29, #4]          // CLO
+        ldr     \wu, [x29, #8]          // CHI again; retry if CLO wrapped
+        cmp     \wt, \wu
+        b.ne    7771b
+        orr     \xd, \xd, \xt, lsl #32
+7772:
+        .endm
 
         .section .text
         .globl _start
 _start:
+        mov     x19, x0                 // device-tree address from the armstub
         mrs     x0, mpidr_el1
         and     x0, x0, #3
         cbnz    x0, hang                // only core 0 runs the test
 
         adr     x0, _start
         mov     sp, x0                  // stack grows down below the image
-
         ldr     x20, =GPIO
         ldr     x21, =UART0
         mov     w22, #(1 << 10)
-        mrs     x23, cntfrq_el0
-        cbnz    x23, 1f
-        ldr     x23, =54000000          // Pi 4 timer rate if firmware left it 0
-1:      ldr     x0, =BAUD
-        udiv    x27, x23, x0
-        mov     x24, #0
-        mov     x25, #0
-        mov     x18, #0
 
-        // ACT LED (GPIO42) output, off
-        str     w22, [x20, #GPCLR1]
+        // ACT LED (GPIO42) on at once: proof of life with no timer involved
+        str     w22, [x20, #GPSET1]
         ldr     w2, [x20, #GPFSEL4]
         bic     w2, w2, #(7 << 6)
         orr     w2, w2, #(1 << 6)
         str     w2, [x20, #GPFSEL4]
+
+        // instruction cache on (MMU stays off, so data accesses still go
+        // straight to DRAM and the RAM test stays a real DRAM test)
+        ic      iallu
+        dsb     sy
+        isb
+        mrs     x0, CurrentEL
+        lsr     x0, x0, #2
+        cmp     x0, #2
+        b.eq    1f
+        cmp     x0, #3
+        b.eq    2f
+        mrs     x1, sctlr_el1
+        orr     x1, x1, #(1 << 12)
+        msr     sctlr_el1, x1
+        b       3f
+1:      mrs     x1, sctlr_el2
+        orr     x1, x1, #(1 << 12)
+        msr     sctlr_el2, x1
+        b       3f
+2:      mrs     x1, sctlr_el3
+        orr     x1, x1, #(1 << 12)
+        msr     sctlr_el3, x1
+3:      isb
+
+        // time base: ARM generic timer if its counter moves, else system timer
+        mov     x29, #0
+        mrs     x23, cntfrq_el0
+        cbnz    x23, 4f
+        ldr     x23, =54000000          // Pi 4 rate if firmware left it 0
+4:
+#ifdef FORCE_ST
+        b       6f
+#endif
+        mrs     x1, cntpct_el0
+        ldr     x2, =0x200000
+5:      mrs     x3, cntpct_el0
+        cmp     x3, x1
+        b.ne    7f
+        subs    x2, x2, #1
+        b.ne    5b
+6:      ldr     x29, =ST_BASE
+        ldr     x23, =1000000
+7:      ldr     x0, =BAUD
+        udiv    x27, x23, x0
+        mov     x24, #0
+        mov     x25, #0
+        mov     x18, #0
 
         // serial pins: latch high (idle) first, then make them outputs
         ldr     w2, =MALL
@@ -110,30 +181,47 @@ _start:
         mov     w2, #0x301
         str     w2, [x21, #0x30]        // CR: UART, TX, RX enable
 
-        lsr     x0, x23, #2             // 0.25 s of idle-high line
+        lsl     x0, x23, #1             // LED solid 2 s, lines idle high
         bl      delay
+        str     w22, [x20, #GPCLR1]
 
-        ldr     x28, =MALL              // header on all bit-banged pins
+        ldr     w28, =MALL              // header on all bit-banged pins
         adr     x0, s_hello
         bl      puts
         adr     x0, _start
         bl      puthex
-        adr     x0, s_crlf
+        adr     x0, s_dtb
+        bl      puts
+        mov     x0, x19
+        bl      puthex
+        adr     x0, s_el
+        bl      puts
+        mrs     x0, CurrentEL
+        lsr     x0, x0, #2
+        bl      putdec
+        adr     x0, s_tarm
+        cbz     x29, 8f
+        adr     x0, s_tsys
+8:      bl      puts
+        mov     x0, x23
+        bl      putdec
+        adr     x0, s_hz
         bl      puts
 
         mov     x26, #BEACONS
-2:      bl      beacon
+9:      bl      beacon
         subs    x26, x26, #1
-        b.ne    2b
+        b.ne    9b
+        mov     x0, x19
         bl      ramtest
-3:      bl      beacon
-        b       3b
+10:     bl      beacon
+        b       10b
 
-// One beacon round, takes 1 s: LED on, one line per pin, one UART line,
-// LED off (+ 4 quick blinks if RAM FAIL), wait out the second.
+// One beacon round, 1 s: LED on, one bit-banged line per pin, LED off,
+// one PL011 line, (+ 4 quick blinks if RAM FAIL), wait out the second.
 beacon: stp     x29, x30, [sp, #-16]!
         stp     x19, x26, [sp, #-16]!
-        mrs     x19, cntpct_el0
+        NOW     x19, w19, x9, w9, w10
         add     x25, x25, #1
         str     w22, [x20, #GPSET1]     // LED on
         adr     x26, pintab
@@ -145,7 +233,8 @@ beacon: stp     x29, x30, [sp, #-16]!
         bl      puts
         bl      tail
         b       1b
-2:      ldr     w9, [x20, #GPFSEL1]     // pin 8 -> ALT0 (PL011 TXD)
+2:      str     w22, [x20, #GPCLR1]     // LED off: ~0.2 s on, whatever the UART does
+        ldr     w9, [x20, #GPFSEL1]     // pin 8 -> ALT0 (PL011 TXD)
         bic     w9, w9, #(7 << 12)
         orr     w9, w9, #(4 << 12)
         str     w9, [x20, #GPFSEL1]
@@ -158,7 +247,6 @@ beacon: stp     x29, x30, [sp, #-16]!
         bic     w9, w9, #(7 << 12)
         orr     w9, w9, #(1 << 12)
         str     w9, [x20, #GPFSEL1]
-        str     w22, [x20, #GPCLR1]     // LED off
         cmp     x24, #2
         b.ne    4f
         mov     x26, #4                 // RAM FAIL: 4 quick blinks
@@ -186,48 +274,74 @@ tail:   stp     x29, x30, [sp, #-16]!
         b.eq    2f
         adr     x0, s_ramfail
 2:      bl      puts
-1:      adr     x0, s_uok
-        cbz     x18, 3f
+1:      cbz     x18, 3f
         adr     x0, s_ustuck
-3:      bl      puts
-        adr     x0, s_crlf
+        bl      puts
+3:      adr     x0, s_crlf
         bl      puts
         ldp     x29, x30, [sp], #16
         ret
 
-// RAM test, reported bit-banged on all pins. LED solid on while it runs.
+// RAM test, x0 = device-tree address (testing stops below it). Reported
+// bit-banged on all pins: 'w' per 64 MB written, '.' per 64 MB verified,
+// LED toggling at each mark. End address kept in x6 (helpers leave x1-x7).
 ramtest:
         stp     x29, x30, [sp, #-16]!
         stp     x19, x26, [sp, #-16]!
-        str     w22, [x20, #GPSET1]
-        ldr     x28, =MALL
+        ldr     x6, =RAM_END
+        and     x9, x0, #0xfffffffffff00000
+        ldr     x10, =(RAM_START + 0x4000000)
+        cmp     x9, x10
+        b.lo    1f
+        cmp     x9, x6
+        b.hs    1f
+        mov     x6, x9
+1:      str     w22, [x20, #GPSET1]
+        ldr     w28, =MALL
         adr     x0, s_ram
+        bl      puts
+        ldr     x0, =RAM_START
+        bl      puthex
+        adr     x0, s_dash
+        bl      puts
+        mov     x0, x6
+        bl      puthex
+        adr     x0, s_crlf
         bl      puts
         mov     x24, #1
         mov     x19, #0                 // pass 0: address, pass 1: inverse
 pass:   adr     x0, s_pass
         bl      puts
         ldr     x26, =RAM_START
-        ldr     x16, =RAM_END
 wr:     mov     x17, x26
         cbz     x19, 1f
         mvn     x17, x26
 1:      str     x17, [x26], #8
-        cmp     x26, x16
+        tst     x26, #0x3ffffff
+        b.ne    2f
+        mov     w0, #'w'
+        bl      putc
+        bl      ledtog
+2:      cmp     x26, x6
         b.lo    wr
         ldr     x26, =RAM_START
 rd:     ldr     x7, [x26]
         mov     x17, x26
-        cbz     x19, 2f
+        cbz     x19, 3f
         mvn     x17, x26
-2:      cmp     x7, x17
+3:
+#ifdef RAMFAIL_TEST
+        eor     x17, x17, #0x10         // QEMU check only: every word "fails"
+#endif
+        cmp     x7, x17
         b.ne    bad
         add     x26, x26, #8
-        tst     x26, #0x3ffffff         // a dot every 64 MB
-        b.ne    3f
+        tst     x26, #0x3ffffff
+        b.ne    4f
         mov     w0, #'.'
         bl      putc
-3:      cmp     x26, x16
+        bl      ledtog
+4:      cmp     x26, x6
         b.lo    rd
         adr     x0, s_ok
         bl      puts
@@ -254,27 +368,37 @@ next:   add     x19, x19, #1
         b.lo    pass
         adr     x0, s_resok
         cmp     x24, #2
-        b.ne    4f
+        b.ne    5f
         adr     x0, s_resbad
-4:      bl      puts
+5:      bl      puts
         str     w22, [x20, #GPCLR1]
         ldp     x19, x26, [sp], #16
         ldp     x29, x30, [sp], #16
         ret
 
+// Toggle the ACT LED (uses x9).
+ledtog: ldr     w9, [x20, #GPLEV1]
+        tst     w9, #(1 << 10)
+        b.ne    1f
+        str     w22, [x20, #GPSET1]
+        ret
+1:      str     w22, [x20, #GPCLR1]
+        ret
+
 // putc: w0 = char, to the PL011 (x28 = 0) or bit-banged on GPIO mask x28.
 // Uses only w0 and x8-x15.
 putc:   cbnz    x28, bbputc
-        mrs     x10, cntpct_el0
-        lsr     x11, x23, #6            // ~15 ms timeout per char
+        cbnz    x18, 3f                 // UART already found stuck: skip
+        NOW     x10, w10, x12, w12, w13
+        lsr     x11, x23, #6            // ~15 ms timeout
         add     x10, x10, x11
 1:      ldr     w9, [x21, #UART_FR]
-        tbz     w9, #5, 2f              // TX FIFO not full
-        mrs     x11, cntpct_el0
+        tbz     w9, #FR_TXFF, 2f        // TX FIFO not full
+        NOW     x11, w11, x12, w12, w13
         cmp     x11, x10
         b.lo    1b
         mov     x18, #1                 // UART stuck: drop the char
-        ret
+3:      ret
 2:      str     w0, [x21, #UART_DR]
         ret
 
@@ -286,14 +410,14 @@ bbputc:
 #endif
         mov     w11, #0x300
         orr     w11, w11, w0            // bit 8 = stop, bit 9 = extra idle
-        mrs     x12, cntpct_el0
+        NOW     x12, w12, x9, w9, w10
         str     w28, [x20, #GPCLR0]     // start bit
 #ifdef TRACE
         bl      trace
 #endif
         mov     x13, #1
 1:      madd    x14, x13, x27, x12
-2:      mrs     x15, cntpct_el0
+2:      NOW     x15, w15, x9, w9, w10
         cmp     x15, x14
         b.lo    2b
         cmp     x13, #11
@@ -317,7 +441,7 @@ bbputc:
 
 #ifdef TRACE
 // QEMU check only: print pin 8's level ('_' low, '^' high) on the UART.
-// Must keep x11-x15, w28. Clobbers x8, x9 (bbputc saves its own x30 in TRACE builds).
+// Keeps x10-x15 and w28; clobbers x8, x9.
 trace:  tst     w28, #M8
         b.eq    2f
         ldr     w8, [x20, #GPLEV0]
@@ -332,12 +456,13 @@ trace:  tst     w28, #M8
 #endif
 
 // Wait (with timeout) until the PL011 has shifted out its last bit.
-udrain: mrs     x10, cntpct_el0
+udrain: cbnz    x18, 2f
+        NOW     x10, w10, x12, w12, w13
         lsr     x11, x23, #2            // 250 ms
         add     x10, x10, x11
 1:      ldr     w9, [x21, #UART_FR]
-        tbz     w9, #3, 2f              // BUSY clear
-        mrs     x11, cntpct_el0
+        tbz     w9, #FR_BUSY, 2f        // BUSY clear
+        NOW     x11, w11, x12, w12, w13
         cmp     x11, x10
         b.lo    1b
         mov     x18, #1
@@ -394,10 +519,10 @@ puthex: stp     x29, x30, [sp, #-16]!
         ret
 
 // x0 = timer ticks to wait
-delay:  mrs     x8, cntpct_el0
+delay:  NOW     x8, w8, x9, w9, w10
         add     x0, x0, x8
 // x0 = absolute timer value to wait for
-until:  mrs     x8, cntpct_el0
+until:  NOW     x8, w8, x9, w9, w10
         cmp     x8, x0
         b.lo    until
         ret
@@ -413,7 +538,12 @@ pintab: .word   M8,  s_bb8  - pintab    // pin 8 first: the expected wire
         .word   M12, s_bb12 - pintab
         .word   0, 0
 
-s_hello: .asciz "\r\n\r\n=== RETRO-TV PI TEST v3 (9600 8N1) ===\r\nCPU core 0 running, loaded at "
+s_hello: .asciz "\r\n\r\n=== RETRO-TV PI TEST v3.1 (9600 8N1) ===\r\nloaded at "
+s_dtb:   .asciz " dtb "
+s_el:    .asciz "\r\nEL"
+s_tarm:  .asciz ", ARM timer "
+s_tsys:  .asciz ", ARM TIMER FROZEN, using system timer "
+s_hz:    .asciz " Hz\r\n"
 s_bb7:   .asciz "\r\n[BB pin 7] PI ALIVE "
 s_bb8:   .asciz "\r\n[BB pin 8] PI ALIVE "
 s_bb10:  .asciz "\r\n[BB pin 10] PI ALIVE "
@@ -422,9 +552,9 @@ s_bb12:  .asciz "\r\n[BB pin 12] PI ALIVE "
 s_uart:  .asciz "\r\n[UART pin 8] PI ALIVE "
 s_ramok: .asciz " RAM OK"
 s_ramfail: .asciz " RAM FAIL"
-s_uok:   .asciz " uart ok"
 s_ustuck: .asciz " UART STUCK"
-s_ram:   .asciz "\r\nRAM test 0x00400000-0x20000000 (first 512 MB)\r\n"
+s_ram:   .asciz "\r\nRAM test "
+s_dash:  .asciz "-"
 s_pass:  .asciz "pass "
 s_ok:    .asciz " OK\r\n"
 s_bad:   .asciz " FAIL at "

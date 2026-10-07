@@ -32,6 +32,7 @@ $cmdline = Join-Path $Root 'cmdline.txt'
 $cmdOrig = Join-Path $Root 'cmdline.txt.retro-tv-orig'
 $testImg = Join-Path $Root 'serialtest.img'
 foreach ($f in $config, $cmdline) { if (-not (Test-Path $f)) { throw "$f not found - is $Root the Pi boot drive?" } }
+Write-Host "prep_usb_serial.ps1 version 2026-10-07b (Pi side 9600 baud)"
 Write-Host "Pi boot drive: $Root  (mode: $Mode)"
 
 function Read-Lf($path) { ([IO.File]::ReadAllText($path)) -replace "`r`n", "`n" }
@@ -75,7 +76,8 @@ switch ($Mode) {
             (Join-Path $PSScriptRoot 'serialtest.img')) | Where-Object { Test-Path $_ } | Select-Object -First 1
         if (-not $src) { throw 'serialtest.img not found next to this script or in arm_serial_ram_test\' }
         if ($PSCmdlet.ShouldProcess($testImg, "copy $src")) { Copy-Item $src $testImg -Force }
-        Write-Host "Copied serialtest.img"
+        $info = if (Test-Path $testImg) { $f = Get-Item $testImg; "$($f.Length) bytes, SHA256 $((Get-FileHash $testImg -Algorithm SHA256).Hash.Substring(0, 12))" } else { 'not written (-WhatIf)' }
+        Write-Host "Copied $src -> $testImg ($info)"
         Set-ConfigBlock @('[all]', 'kernel=serialtest.img', 'arm_64bit=1')
     }
     'linux' {
