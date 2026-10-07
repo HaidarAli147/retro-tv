@@ -8,7 +8,17 @@
 Checked in QEMU (Pi 3 model, same UART/GPIO at a different address) with
 `serialtest_qemu_pi3.img`; both the OK and the FAIL report print correctly.
 
-## Steps
+## Quick way: the prep script
+From the `pi_debug` folder, with the USB stick (or SD card) plugged into the PC:
+```
+powershell -ExecutionPolicy Bypass -File prep_usb_serial.ps1 -Mode serialtest
+```
+It finds the boot drive, backs up `config.txt`/`cmdline.txt` to Downloads, copies
+`serialtest.img` and sets `config.txt`. Then continue at step 3 below.
+After this test, `-Mode linux` sets the drive to boot Linux with its messages on the
+serial pin (corrected `earlycon=pl011,mmio32,0xfe201000`); `-Mode undo` restores everything.
+
+## Steps (by hand)
 1. Put the SD card in the PC, open `bootfs`, copy `serialtest.img` next to `kernel8.img`.
 2. In `config.txt`, at the bottom, change `kernel=blink.img` to `kernel=serialtest.img`.
    The bottom should read:
