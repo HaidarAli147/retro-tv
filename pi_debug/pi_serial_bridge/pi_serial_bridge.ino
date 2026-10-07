@@ -17,10 +17,11 @@ void setup() {
   Serial.println(F("BRIDGE v3 READY - waiting for the Pi on pin 10 (9600 baud)"));
 }
 
-// Line level with the Uno's pull-up on and off:
-//   on HIGH, off HIGH = something drives it high (the test idling), or no wire
-//   on HIGH, off LOW  = a Pi pin nobody drives (its own pull-down), or no wire
-//   on LOW,  off LOW  = wire on a GND pin, or the Pi pin is driven low
+// Line level with the Uno's pull-up on and off (the level alone never proves
+// that the Pi test runs: the firmware itself idles pin 8 high as a UART pin):
+//   on HIGH, off HIGH = something drives it high, or no wire
+//   on HIGH, off LOW  = an undriven Pi pin with a pull-down, or no wire
+//   on LOW,  off LOW  = wire on a GND pin, or the Pi pin pulled/driven low
 void reportLevel() {
   pi.stopListening();
   pinMode(10, INPUT);
@@ -31,11 +32,11 @@ void reportLevel() {
   int pullOn = digitalRead(10);
   pi.listen();
   if (pullOn && pullOff) {
-    Serial.println(F("HIGH (driven high, or no wire)"));
+    Serial.println(F("HIGH (something drives it high, or no wire)"));
   } else if (pullOn) {
-    Serial.println(F("weak LOW (a Pi pin nobody drives, or no wire)"));
+    Serial.println(F("weak LOW (undriven Pi pin, or no wire)"));
   } else if (!pullOff) {
-    Serial.println(F("LOW (wire on a GND pin, or the Pi pin driven low)"));
+    Serial.println(F("LOW (wire on a GND pin, or the Pi pin pulled/driven low)"));
   } else {
     Serial.println(F("unstable (loose wire?)"));
   }

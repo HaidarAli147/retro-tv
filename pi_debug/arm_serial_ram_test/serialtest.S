@@ -2,7 +2,8 @@
 // carries text, does the PL011 UART work, is the first 512 MB of RAM OK.
 //
 // LED (ACT, green) timeline once the firmware hands over:
-//   solid ON 2 s (switched on by the first instructions, before any timer use)
+//   ON, then 3 quick dark blinks timed by countdown loops (no timer needed),
+//   then solid ON 2 s
 //   -> 5 rounds of one short flash per second
 //   -> RAM test: LED toggles at every 64 MB mark (slow, irregular on/off)
 //   -> one short flash per second forever (RAM OK), or flash + 4 quick (RAM FAIL).
@@ -129,6 +130,20 @@ _start:
         orr     x1, x1, #(1 << 12)
         msr     sctlr_el3, x1
 3:      isb
+
+        // timer-free start signature: 3 quick dark blinks from countdown loops
+        // (~0.1-0.2 s each at 0.6-1.8 GHz), so 'blinks, then solid' can only be us
+        mov     x3, #3
+11:     str     w22, [x20, #GPCLR1]
+        mov     x0, #(1 << 27)
+12:     subs    x0, x0, #1
+        b.ne    12b
+        str     w22, [x20, #GPSET1]
+        mov     x0, #(1 << 27)
+13:     subs    x0, x0, #1
+        b.ne    13b
+        subs    x3, x3, #1
+        b.ne    11b
 
         // time base: ARM generic timer if its counter moves, else system timer
         mov     x29, #0
@@ -264,7 +279,7 @@ beacon: stp     x29, x30, [sp, #-16]!
         ldp     x29, x30, [sp], #16
         ret
 
-// Rest of a beacon line: counter, RAM state, UART state, CRLF.
+// Rest of a beacon line: counter, RAM state, timer verdict, UART state, CRLF.
 tail:   stp     x29, x30, [sp, #-16]!
         mov     x0, x25
         bl      putdec
@@ -274,7 +289,10 @@ tail:   stp     x29, x30, [sp, #-16]!
         b.eq    2f
         adr     x0, s_ramfail
 2:      bl      puts
-1:      cbz     x18, 3f
+1:      cbz     x29, 4f
+        adr     x0, s_tfrozen           // the timer verdict on every line
+        bl      puts
+4:      cbz     x18, 3f
         adr     x0, s_ustuck
         bl      puts
 3:      adr     x0, s_crlf
@@ -553,6 +571,7 @@ s_uart:  .asciz "\r\n[UART pin 8] PI ALIVE "
 s_ramok: .asciz " RAM OK"
 s_ramfail: .asciz " RAM FAIL"
 s_ustuck: .asciz " UART STUCK"
+s_tfrozen: .asciz " ARM-TIMER-FROZEN"
 s_ram:   .asciz "\r\nRAM test "
 s_dash:  .asciz "-"
 s_pass:  .asciz "pass "
