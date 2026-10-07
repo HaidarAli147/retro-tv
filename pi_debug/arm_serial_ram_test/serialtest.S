@@ -1,5 +1,5 @@
 // Bare-metal Raspberry Pi 4 test: serial output on GPIO14 + RAM test.
-// Prints to the PL011 UART (pin 8, 115200 8N1), tests RAM 0x00200000-0x20000000
+// Prints to the PL011 UART (pin 8, 9600 8N1 by default; build with -DBAUD=115200 for 115200), tests RAM 0x00200000-0x20000000
 // (the first 512 MB, which Linux still failed in with total_mem=512), then
 // blinks the ACT LED: 3 flashes + pause = RAM OK, 10 fast flashes + pause = RAM FAIL.
 // Build: see build.sh (PERI_BASE 0xFE000000 = Pi 4, 0x3F000000 = Pi 3 for QEMU).
@@ -7,6 +7,11 @@
 #ifndef PERI_BASE
 #define PERI_BASE 0xFE000000
 #endif
+#ifndef BAUD
+#define BAUD 9600
+#endif
+// PL011 divisor from the 48 MHz UART clock: 48e6 / (16 * BAUD) = IBRD + FBRD/64
+#define DIV64 ((48000000 * 4 + BAUD / 2) / BAUD)
 #define GPIO      (PERI_BASE + 0x200000)
 #define UART0     (PERI_BASE + 0x201000)
 #define RAM_START 0x00200000
@@ -47,13 +52,13 @@ _start:
         orr     w2, w2, w3
         str     w2, [x20, #0x04]
 
-        // PL011: 115200 baud from the 48 MHz UART clock (26 + 3/64)
+        // PL011 at BAUD (9600 by default, readable by an Uno's SoftwareSerial)
         str     wzr, [x21, #0x30]       // CR off
         mov     w2, #0x7ff
         str     w2, [x21, #0x44]        // clear interrupts
-        mov     w2, #26
+        ldr     w2, =(DIV64 >> 6)
         str     w2, [x21, #0x24]        // IBRD
-        mov     w2, #3
+        ldr     w2, =(DIV64 & 63)
         str     w2, [x21, #0x28]        // FBRD
         mov     w2, #0x70
         str     w2, [x21, #0x2c]        // 8N1, FIFO on

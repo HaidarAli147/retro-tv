@@ -1,7 +1,8 @@
 # Prepares the Pi boot drive (the "bootfs" partition of the USB stick or SD card)
 # for serial debugging through the Arduino (see read_pi_serial.ps1).
 #   -Mode serialtest : boot the bare-metal serial + RAM test (serialtest.img)
-#   -Mode linux      : boot Linux with kernel messages on GPIO14 / pin 8 (115200)
+#   -Mode linux      : boot Linux with kernel messages on GPIO14 / pin 8 (9600)
+# Both test modes send at 9600 baud, read through the Uno running pi_serial_bridge.ino.
 #   -Mode undo       : put config.txt and cmdline.txt back as they were
 # Every run first copies config.txt and cmdline.txt to
 # Downloads\usb_boot_backup_serial_<time>. Add -WhatIf to only show the changes.
@@ -78,14 +79,14 @@ switch ($Mode) {
         Set-ConfigBlock @('[all]', 'kernel=serialtest.img', 'arm_64bit=1')
     }
     'linux' {
-        Set-ConfigBlock @('[all]', 'enable_uart=1', 'uart_2ndstage=1', 'dtoverlay=disable-bt')
+        Set-ConfigBlock @('[all]', 'enable_uart=1', 'uart_2ndstage=1', 'dtoverlay=disable-bt', 'init_uart_baud=9600')
         $old = (Read-Lf $cmdline).Trim()
         if (-not (Test-Path $cmdOrig) -and $PSCmdlet.ShouldProcess($cmdOrig, 'save original cmdline.txt')) {
             Copy-Item $cmdline $cmdOrig
         }
         $drop = '^(quiet|splash|plymouth\.ignore-serial-consoles|ignore_loglevel|keep_bootcon|console=tty1|earlycon(=.*)?|console=(serial0|ttyAMA0|ttyS0).*|loglevel=.*)$'
         $tokens = @($old -split '\s+' | Where-Object { $_ -and $_ -notmatch $drop })
-        $tokens = @('earlycon=pl011,mmio32,0xfe201000', 'console=ttyAMA0,115200', 'console=tty1') + $tokens + @('ignore_loglevel', 'keep_bootcon')
+        $tokens = @('earlycon=pl011,mmio32,0xfe201000', 'console=ttyAMA0,9600', 'console=tty1') + $tokens + @('ignore_loglevel', 'keep_bootcon')
         $new = $tokens -join ' '
         Save $cmdline "$new`n"
         Write-Host "cmdline.txt before: $old"

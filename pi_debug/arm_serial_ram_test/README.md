@@ -1,11 +1,12 @@
 # Serial + RAM test (run after the ARM LED test)
 
 `serialtest.img` is a bare-metal program (no Linux) that:
-1. sends text out of the Pi's serial pin (GPIO14 / pin 8, 115200 baud),
+1. sends text out of the Pi's serial pin (GPIO14 / pin 8, 9600 baud),
 2. tests the first 512 MB of RAM twice (dots show progress),
 3. then blinks the green LED forever: **3 flashes + pause = RAM OK**, **10 fast flashes + pause = RAM FAIL**.
 
-Checked in QEMU (Pi 3 model, same UART/GPIO at a different address) with
+Built at 9600 baud by default (`-DBAUD=115200` for 115200); the Uno's SoftwareSerial
+reads 9600 reliably. Checked in QEMU (Pi 3 model, same UART/GPIO at a different address) with
 `serialtest_qemu_pi3.img`; both the OK and the FAIL report print correctly.
 
 ## Quick way: the prep script
@@ -27,10 +28,12 @@ serial pin (corrected `earlycon=pl011,mmio32,0xfe201000`); `-Mode undo` restores
    kernel=serialtest.img
    arm_64bit=1
    ```
-3. Wiring (Pi powered off): Pi **pin 8** -> Uno **pin 1 (TX)**, Pi **pin 6 (GND)** -> Uno **GND**,
-   Uno **RESET** -> Uno **GND**. Nothing on Pi pin 10. Uno plugged into the PC by USB.
+3. Upload `../pi_serial_bridge/pi_serial_bridge.ino` to the Uno (it reads the Pi on pin 10 and
+   prints to the Serial Monitor). Wiring (Pi powered off): Pi **pin 8** -> Uno **pin 10**,
+   Pi **pin 6 (GND)** -> Uno **GND**. Nothing on Uno pins 0/1, no RESET wire.
    On the Pi's outer row, counting from the corner pin: 5V, 5V, GND (pin 6), **TXD (pin 8)**.
-4. On the PC start the serial reader first: Arduino IDE Serial Monitor at **115200**,
+4. On the PC start the serial reader first: Arduino IDE Serial Monitor at **115200** (the bridge's
+   USB side; it shows `BRIDGE READY`),
    or `read_pi_serial.ps1` (log goes to Downloads\pi_boot_serial_log.txt).
 5. Power the Pi. Wait until the LED starts its flash pattern (up to a few minutes).
 
