@@ -5,6 +5,7 @@ Table of everything that happens on the project (changes, tests, results, sugges
 
 | Date | Area | Change |
 |---|---|---|
+| 2026-10-07 | Setup | User asked how Claude can reach their PC while staying available when the PC is off. Answer: two sessions sharing this GitHub repo. A local session on the PC (Claude Desktop app, or `claude remote-control` in a terminal in a clone of the repo, which also shows up in the Claude Code app) can run scripts, edit the USB stick and read the Arduino's COM port. This cloud session stays available without the PC. PROJECT_LOG.md and CLAUDE.md keep both in sync |
 | 2026-10-07 | Pi boot | Drive check: the USB stick's bootfs (FAT32, 528 MB) first had no drive letter, then appeared as D: with config.txt and start4.elf present (valid Pi 4 boot partition). Told the user to rerun the prep script with `-Root D:\` |
 | 2026-10-07 | Pi boot | Script now runs from C:\Users\haals\Downloads (download worked) but stopped with "No Pi boot drive found": no drive letter has both config.txt and start4.elf, so nothing was changed. Asked the user to list their drives (Get-Volume) to see whether the USB stick's bootfs has a letter; if it has one, use -Root X:\, if not, assign a letter in Disk Management |
 | 2026-10-07 | Pi boot | User didn't know how to download the attached files. Gave a single PowerShell block to paste that writes prep_usb_serial.ps1 (here-string) and serialtest.img (base64) into Downloads; round-trip checked in PowerShell 7 (both files identical) |
