@@ -2,6 +2,12 @@
 Reviewed 2026-10-10. **Concept only — not released for cutting or drilling.**
 All dimensions below are millimetres (mm). No new physical measurements were supplied.
 
+## Customer-specific sizing
+**Cabinet size depends on the customer.** User decision, 2026-10-10, PR #3 comment. The 22-inch dimensions below describe one provisional CAD configuration, not a fixed product size or a requirement for all customers.
+The user also reports the current physical frame is finished and everything is good. Preserve that completed build; its as-built dimensions have not been supplied here.
+For each future customer, collect the chosen monitor's actual dimensions, component sizes and desired maximum cabinet size, then derive and validate that customer's enclosure and drawings. Do not simply scale the whole model: wall thickness, fasteners, board mounting patterns, controls and clearances need independent dimensions.
+The measurement hold below applies to finalizing unverified CAD/cutting drawings and future customer builds; it does not mean the user's completed frame must be rebuilt.
+
 ## Current files
 - `enclosure_22in.scad` and `enclosure_work/enclosure_22in.scad`: identical at review; current 22-inch model sources. Keep both synchronized.
 - `enclosure_work/final22/`: existing 22-inch exports, as recorded in PROJECT_LOG.md; not regenerated or visually verified in this review.
