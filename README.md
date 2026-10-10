@@ -1,3 +1,5 @@
+> **Current enclosure status (2026-10-10):** The project has moved to a 22-inch HDMI monitor. Start with the [current design review and measurement checklist](enclosure_work/DESIGN_REVIEW_22IN.md) and `enclosure_22in.scad`. Monitor values remain placeholders: do not cut from them. The 14-inch enclosure instructions below are historical.
+
 # Retro-TV media box — final build
 
 A 14" laptop panel in a retro-TV case, driven by an LVDS controller board,
