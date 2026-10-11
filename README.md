@@ -1,3 +1,11 @@
+# Current TV app update
+
+For the Python/GTK app's speaker-percentage indicator, automatic web-app icons,
+current installation copies and validation limits, see
+[Speaker volume and web-app icons](docs/TV_VOLUME_AND_ICONS.md).
+The older build guide below still contains legacy Kodi/display/wiring details;
+it is not the current app installation guide.
+
 > **Current enclosure status (2026-10-10):** The project has moved to a 22-inch HDMI monitor. Start with the [current design review and measurement checklist](enclosure_work/DESIGN_REVIEW_22IN.md) and `enclosure_22in.scad`. Monitor values remain placeholders: do not cut from them. The 14-inch enclosure instructions below are historical.
 
 # Retro-TV media box — final build
@@ -141,3 +149,4 @@ Sliding clearance is 0.4 mm. If the panel binds or rattles, change
 The LVDS driver board is not in the model yet. When it arrives, measure its
 length, width, mounting hole positions and connector positions, and add its
 standoffs plus rear cutouts for HDMI, VGA and power.
+
