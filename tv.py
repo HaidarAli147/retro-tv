@@ -28,6 +28,9 @@ import socket
 import subprocess
 import sys
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from html.parser import HTMLParser
 import urllib.parse
 import urllib.request
 
@@ -259,6 +262,144 @@ CHIME = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chime.wav")
 LOGO_CACHE = os.path.expanduser("~/.cache/brack-tv-logos")
 LOGO_W, LOGO_H = 76, 50
 
+APP_ICON_CACHE = os.path.expanduser("~/.cache/brack-tv/app-icons")
+ICON_MAX_BYTES = 1024 * 1024
+ICON_CACHE_SECONDS = 7 * 24 * 3600
+
+
+def parse_speaker_volume(output):
+    """Parse wpctl's sink level, not mpv's independent stream volume."""
+    match = re.fullmatch(r"\s*Volume:\s*([0-9]+(?:\.[0-9]+)?)\s*(\[MUTED\])?\s*", output)
+    if not match:
+        raise ValueError("Unrecognized wpctl volume")
+    return float(match[1]), bool(match[2])
+
+
+def read_speaker_volume():
+    """Read the current desktop user's default PipeWire output off-thread."""
+    if IS_WINDOWS:
+        return None
+    try:
+        result = subprocess.run(
+            ["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"],
+            capture_output=True, text=True, check=True, timeout=1,
+            env=dict(os.environ, LC_ALL="C"),
+        )
+        return parse_speaker_volume(result.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def http_icon_url(base, href):
+    """Only request web resources; never open local files from page metadata."""
+    url = urllib.parse.urljoin(base, href)
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("Not an HTTP icon URL")
+    if parsed.username or parsed.password:
+        raise ValueError("Credentials are not allowed in icon URLs")
+    return url
+
+
+class IconLinks(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.links = []
+        self.base = None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "base" and self.base is None:
+            self.base = attrs.get("href")
+        if tag != "link" or not attrs.get("href"):
+            return
+        rel = attrs.get("rel", "").lower().split()
+        if "apple-touch-icon" in rel or "apple-touch-icon-precomposed" in rel:
+            self.links.insert(0, attrs["href"])
+        elif "icon" in rel:
+            self.links.append(attrs["href"])
+
+
+class IconRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return super().redirect_request(
+            req, fp, code, msg, headers, http_icon_url(req.full_url, newurl))
+
+
+def read_icon_resource(url):
+    url = http_icon_url(url, "")
+    request = urllib.request.Request(url, headers={"User-Agent": WEB_USER_AGENT})
+    # No browser cookies or credentials are sent. Never use a favicon proxy.
+    with urllib.request.build_opener(IconRedirectHandler()).open(request, timeout=3) as response:
+        final_url = http_icon_url(response.geturl(), "")
+        data = response.read(ICON_MAX_BYTES + 1)
+        if len(data) > ICON_MAX_BYTES:
+            raise ValueError("Icon resource too large")
+        return data, final_url
+
+
+def decode_app_icon(data):
+    loader = GdkPixbuf.PixbufLoader.new()
+    loader.set_size(64, 64)
+    loader.write(data)
+    loader.close()
+    pixbuf = loader.get_pixbuf()
+    if pixbuf is None:
+        raise ValueError("Empty image")
+    return pixbuf
+
+
+def fetch_app_icon(url):
+    """Discover and cache a real website icon; return None for text fallback."""
+    cache = os.path.join(APP_ICON_CACHE, hashlib.sha256(url.encode()).hexdigest() + ".png")
+    cached = None
+    try:
+        cached = GdkPixbuf.Pixbuf.new_from_file_at_scale(cache, 64, 64, True)
+        if time.time() - os.path.getmtime(cache) < ICON_CACHE_SECONDS:
+            return cached
+    except (OSError, GLib.Error):
+        pass
+    try:
+        url = http_icon_url(url, "")
+    except ValueError:
+        return cached
+    candidates = []
+    try:
+        html, final_url = read_icon_resource(url)
+        parser = IconLinks()
+        parser.feed(html.decode("utf-8", errors="replace"))
+        base = final_url
+        if parser.base:
+            try:
+                base = http_icon_url(final_url, parser.base)
+            except ValueError:
+                pass
+        for href in parser.links[:6]:
+            try:
+                candidates.append(http_icon_url(base, href))
+            except ValueError:
+                pass
+        candidates.append(http_icon_url(final_url, "/favicon.ico"))
+    except (OSError, ValueError):
+        pass
+    candidates.append(http_icon_url(url, "/favicon.ico"))
+    for candidate in dict.fromkeys(candidates):
+        try:
+            data, _ = read_icon_resource(candidate)
+            pixbuf = decode_app_icon(data)
+        except (OSError, ValueError, GLib.Error):
+            continue
+        try:
+            os.makedirs(APP_ICON_CACHE, exist_ok=True)
+            # Atomic replacement avoids partial cache entries after a shutdown.
+            temporary = cache + ".%s.tmp" % threading.get_ident()
+            pixbuf.savev(temporary, "png", [], [])
+            os.replace(temporary, cache)
+        except (OSError, GLib.Error):
+            pass
+        return pixbuf
+    return cached
+
 
 def load_playlist(path):
     """Return [(name, url, logo_url, group), ...] from an M3U file."""
@@ -436,7 +577,8 @@ def native_window_id(win):
     return gdk.gdk_win32_window_get_handle(ptr)
 
 SEGMENTS = 16          # blocks in the volume bar
-START_VOLUME = 70      # where the app starts, 0 - 100
+# PipeWire owns the Pi's volume; do not secretly attenuate it again in mpv.
+START_VOLUME = 70 if IS_WINDOWS else 100
 OSD_TIMEOUT_MS = 1800  # how long the bar stays on screen
 
 
@@ -476,15 +618,15 @@ class VolumeOSD(Gtk.Window):
             bar.pack_start(seg, False, False, 0)
             self.segments.append(seg)
 
-    def show_level(self, level, muted=False):
-        """level is 0.0 - 1.0."""
-        lit = 0 if muted else int(round(level * SEGMENTS))
+    def show_level(self, level, muted=False, source="SPEAKER"):
+        """Display the reported percentage, including amplified sinks >100%."""
+        lit = 0 if muted else int(round(min(1.0, max(0.0, level)) * SEGMENTS))
         for i, seg in enumerate(self.segments):
             ctx = seg.get_style_context()
             ctx.remove_class("seg-on" if i >= lit else "seg-off")
             ctx.add_class("seg-on" if i < lit else "seg-off")
-        self.caption.set_text(
-            "MUTED" if muted else "VOLUME  %d%%" % int(round(level * 100)))
+        self.caption.set_text("%s  %d%%%s" % (
+            source, int(round(level * 100)), "  MUTED" if muted else ""))
 
         self.show_all()
         screen_w = self.get_screen().get_width()
@@ -501,13 +643,18 @@ class VolumeOSD(Gtk.Window):
         self._timer = None
         return False
 
+    def dismiss(self):
+        if self._timer is not None:
+            GLib.source_remove(self._timer)
+            self._timer = None
+        self.hide()
+
 
 class Player:
     """One mpv process drawing into our video area.
 
-    Volume is mpv's own, not the system's. Changing the system volume makes
-    the desktop pop up its own indicator, which we do not want over the top
-    of this app.
+    Pi playback stays at unity (100%); the knob controls the PipeWire sink.
+    Windows retains its existing player volume and named-pipe IPC.
     """
 
     SOCKET = r"\\.\pipe\tv-mpv" if IS_WINDOWS else "/tmp/tv-mpv.sock"
@@ -612,6 +759,13 @@ class TVWindow(Gtk.Window):
         self.home_apps = []
         self.home_tiles = []
         self.home_index = 0
+        self._closed = False
+        self._speaker_level = None
+        self._volume_busy = False
+        self._audio_workers = ThreadPoolExecutor(max_workers=1)
+        self._icon_workers = ThreadPoolExecutor(max_workers=2)
+        self._icon_generation = 0
+        self._icon_jobs = []
 
         self.state = load_state()
         # Only resume automatically if a previous run actually left a
@@ -636,6 +790,10 @@ class TVWindow(Gtk.Window):
         self.populate()
         self.refresh_store_list()
         self.rebuild_home_apps()
+        self._volume_timer = None
+        if not IS_WINDOWS:
+            self._volume_timer = GLib.timeout_add(500, self._poll_speaker)
+            self._poll_speaker()
 
     # ================================================================
     #  HOME - a row of app tiles
@@ -664,6 +822,53 @@ class TVWindow(Gtk.Window):
         home_hint.get_style_context().add_class("hint")
         self.home_screen.pack_start(home_hint, False, False, 0)
 
+        self.speaker_bar = Gtk.ProgressBar()
+        self.speaker_bar.set_show_text(True)
+        self.speaker_bar.set_text("SPEAKER UNAVAILABLE" if not IS_WINDOWS
+                                  else "SPEAKER LEVEL UNAVAILABLE ON WINDOWS")
+        self.speaker_bar.set_margin_start(24)
+        self.speaker_bar.set_margin_end(24)
+        self.speaker_bar.set_margin_top(8)
+        self.speaker_bar.set_margin_bottom(12)
+        self.home_screen.pack_start(self.speaker_bar, False, False, 0)
+
+    def _poll_speaker(self):
+        if self._closed:
+            return False
+        if not self._volume_busy:
+            self._volume_busy = True
+            future = self._audio_workers.submit(read_speaker_volume)
+            future.add_done_callback(self._speaker_read_done)
+        return True
+
+    def _speaker_read_done(self, future):
+        try:
+            result = future.result()
+        except Exception:
+            result = None
+        if not self._closed:
+            GLib.idle_add(self._apply_speaker_level, result)
+
+    def _apply_speaker_level(self, result):
+        self._volume_busy = False
+        if self._closed:
+            return False
+        previous = self._speaker_level
+        self._speaker_level = result
+        if result is None:
+            self.speaker_bar.set_fraction(0)
+            self.speaker_bar.set_text("SPEAKER UNAVAILABLE")
+            self.osd.dismiss()
+            return False
+        level, muted = result
+        self.speaker_bar.set_fraction(0 if muted else min(1.0, level))
+        self.speaker_bar.set_text("SPEAKER  %d%%%s" % (
+            round(level * 100), "  MUTED" if muted else ""))
+        if previous is not None and (round(previous[0] * 100), previous[1]) != (
+                round(level * 100), muted):
+            self.osd.show_level(level, muted)
+        return False
+
     def rebuild_home_apps(self):
         """Re-reads apps.json and rebuilds the tiles - call after add/remove."""
         custom = load_apps()
@@ -679,6 +884,11 @@ class TVWindow(Gtk.Window):
         self._build_home_tiles()
 
     def _build_home_tiles(self):
+        self._icon_generation += 1
+        generation = self._icon_generation
+        for job in self._icon_jobs:
+            job.cancel()
+        self._icon_jobs = []
         for child in self.home_tile_box.get_children():
             self.home_tile_box.remove(child)
         self.home_tiles = []
@@ -694,6 +904,12 @@ class TVWindow(Gtk.Window):
             icon.get_style_context().add_class("tile-icon")
             icon.set_valign(Gtk.Align.CENTER)
             tile.pack_start(icon, True, True, 0)
+            if app["kind"] == "web":
+                future = self._icon_workers.submit(fetch_app_icon, app["url"])
+                self._icon_jobs.append(future)
+                future.add_done_callback(
+                    lambda task, target=icon, parent=tile, version=generation:
+                    self._app_icon_done(task, target, parent, version))
 
             name_lab = Gtk.Label(label=app["name"].upper())
             name_lab.get_style_context().add_class("tile-name")
@@ -706,6 +922,26 @@ class TVWindow(Gtk.Window):
 
         self.home_tile_box.show_all()
         self.select_home_tile(self.home_index)
+
+    def _app_icon_done(self, future, fallback, tile, generation):
+        if future.cancelled() or self._closed:
+            return
+        try:
+            pixbuf = future.result()
+        except Exception:
+            return  # The text tile remains usable if discovery fails.
+        if pixbuf is not None:
+            GLib.idle_add(self._apply_app_icon, pixbuf, fallback, tile, generation)
+
+    def _apply_app_icon(self, pixbuf, fallback, tile, generation):
+        if self._closed or generation != self._icon_generation:
+            return False
+        tile.remove(fallback)
+        icon = Gtk.Image.new_from_pixbuf(pixbuf)
+        tile.pack_start(icon, True, True, 0)
+        tile.reorder_child(icon, 0)
+        icon.show()
+        return False
 
     def select_home_tile(self, idx):
         if not self.home_apps:
@@ -1000,7 +1236,10 @@ class TVWindow(Gtk.Window):
             self.toggle_video_full()
         # Show the level whenever a channel starts. Without this a volume of
         # zero looks like a broken channel rather than a turned-down system.
-        self.osd.show_level(self.volume / 100.0, muted=self.muted)
+        if IS_WINDOWS:
+            self.osd.show_level(self.volume / 100.0, muted=self.muted, source="PLAYER")
+        elif self._speaker_level is not None:
+            self.osd.show_level(*self._speaker_level)
 
     def toggle_video_full(self):
         self.video_full = not self.video_full
@@ -1348,7 +1587,13 @@ class TVWindow(Gtk.Window):
         return False
 
     def on_destroy(self, *_):
+        self._closed = True
+        if self._volume_timer is not None:
+            GLib.source_remove(self._volume_timer)
+        self._audio_workers.shutdown(wait=False, cancel_futures=True)
+        self._icon_workers.shutdown(wait=False, cancel_futures=True)
         self.player.stop()
+        self.osd.dismiss()
         self.osd.destroy()
         Gtk.main_quit()
 
@@ -1381,3 +1626,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
