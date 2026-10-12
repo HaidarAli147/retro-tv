@@ -9,12 +9,12 @@ The existing theme is retained pending an accessible reference.
 
 ## Current sources and installation
 
-`tv.py` is the app source. `pi_kit/tv.py` is the installation copy, and
-`install_tv.sh` embeds the same source. Keep all three synchronized whenever
+`raspberry_pi/tv.py` is the app source; the duplicate `pi_kit/` was consolidated.
+`raspberry_pi/install_tv.sh` embeds the same source. Keep both synchronized whenever
 the app changes. Files under `downloads_archive/` and `.bak` files are history.
 
 On an existing configured Pi, replace the installed `~/tv.py` with the current
-root or `pi_kit/` copy, then restart the app as the desktop user (not with sudo).
+`raspberry_pi/tv.py` copy, then restart the app as the desktop user (not with sudo).
 This preserves `~/.config/brack-tv/apps.json`, channel-resume state and web logins.
 The one-file installer also replaces the bundled playlist and chime, so copy
 only `tv.py` when preserving a customized playlist.
@@ -67,8 +67,9 @@ Run from the repository with the app's GTK/GdkPixbuf Python packages installed:
 
 ```sh
 /usr/bin/python3 -m unittest discover -s tests -v
-python3 -m py_compile tv.py pi_kit/tv.py
-bash -n install_tv.sh pi_kit/setup.sh
+python3 -m py_compile raspberry_pi/tv.py
+bash -n raspberry_pi/install_tv.sh
+bash -n raspberry_pi/setup.sh
 ```
 
 The offline tests exercise mocked PipeWire output/failures, mute and recovery,

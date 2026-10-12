@@ -1,6 +1,6 @@
 #!/bin/bash
 # Retro TV one-shot setup. Run on the Pi (NOT with sudo):
-#   bash /boot/firmware/kit/setup.sh
+#   bash ~/raspberry_pi/setup.sh
 set -e
 cd "$(dirname "$0")"
 

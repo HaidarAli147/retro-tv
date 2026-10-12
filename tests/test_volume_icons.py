@@ -11,7 +11,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "raspberry_pi"))
 import tv
 
 
@@ -136,9 +136,8 @@ class IconTests(unittest.TestCase):
 
 class DistributionTests(unittest.TestCase):
     def test_active_app_copies_match(self):
-        root = pathlib.Path(__file__).resolve().parents[1]
+        root = pathlib.Path(__file__).resolve().parents[1] / "raspberry_pi"
         source = (root / "tv.py").read_text()
-        self.assertEqual(source, (root / "pi_kit/tv.py").read_text())
         installer = (root / "install_tv.sh").read_text()
         embedded = installer.split("<<'TV_PY_EOF_9f3'\n", 1)[1].split("\nTV_PY_EOF_9f3", 1)[0]
         self.assertEqual(source.rstrip("\n"), embedded.rstrip("\n"))
