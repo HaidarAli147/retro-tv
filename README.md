@@ -11,6 +11,7 @@ and volume controls, and a separate Raspberry Pi GPIO3 shutdown button.
 | [arduino/](arduino/) | Current Uno firmware and separate diagnostic/older sketches |
 | [enclosure_work/](enclosure_work/) | Enclosure models and design review |
 | [docs/](docs/) | Software notes and historical build guide |
+| [pptx_work/](pptx_work/) | Current project-fair PowerPoint, supplied source deck and refresh script |
 | [tests/](tests/) | Offline app checks |
 | downloads_archive/ | Historical snapshots; not installation sources |
 
