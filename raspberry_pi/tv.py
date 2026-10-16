@@ -1366,6 +1366,7 @@ class TVWindow(Gtk.Window):
                 settings.set_property("media-playback-requires-user-gesture", False)
             except TypeError:
                 pass
+            self._setup_web_keyboard_detection()
             self.web_box.pack_start(self.webview, True, True, 0)
         else:
             notice = Gtk.Label(
@@ -1375,6 +1376,49 @@ class TVWindow(Gtk.Window):
                 xalign=0)
             notice.get_style_context().add_class("notice")
             self.web_box.pack_start(notice, True, True, 0)
+
+    def _setup_web_keyboard_detection(self):
+        """Show the system keyboard on web text-input focus."""
+        try:
+            manager = self.webview.get_user_content_manager()
+            if not manager.register_script_message_handler("retroKeyboard"):
+                return
+            manager.connect("script-message-received::retroKeyboard",
+                            self._on_web_keyboard_focus)
+            js = r"""
+(function() {
+  if (window.__retroKeyboard) return;
+  window.__retroKeyboard = true;
+  function update() {
+    var el = document.activeElement, editable = false;
+    if (el) {
+      var tag = el.tagName, type = (el.type || 'text').toLowerCase();
+      editable = !el.disabled && !el.readOnly &&
+        (tag === 'TEXTAREA' || el.isContentEditable ||
+         (tag === 'INPUT' && !/^(button|submit|reset|checkbox|radio|file|hidden|image|range|color)$/.test(type)));
+    }
+    try { window.webkit.messageHandlers.retroKeyboard.postMessage(editable ? 'show' : 'hide'); }
+    catch (e) {}
+  }
+  document.addEventListener('focusin', update, true);
+  document.addEventListener('focusout', function(){ setTimeout(update, 100); }, true);
+})();
+"""
+            manager.add_script(WEBKIT.UserScript.new(
+                js, WEBKIT.UserContentInjectedFrames.ALL_FRAMES,
+                WEBKIT.UserScriptInjectionTime.START, None, None))
+        except (AttributeError, GLib.Error, TypeError):
+            pass
+
+    def _on_web_keyboard_focus(self, _manager, message):
+        if self.screen != "WEB" or self._closed:
+            return
+        try:
+            action = message.get_js_value().to_string()
+        except (AttributeError, TypeError):
+            return
+        if action in ("show", "hide"):
+            set_desktop_keyboard(action == "show")
 
     # ================================================================
     #  STORE - add an app by URL
@@ -1500,7 +1544,7 @@ class TVWindow(Gtk.Window):
     # ================================================================
     def apply_screen(self):
         s = self.screen
-        if s != "STORE":
+        if s not in ("STORE", "WEB"):
             set_desktop_keyboard(False)
         self.home_screen.set_visible(s == "HOME")
         self.sidebar.set_visible(s == "LIVE" and not self.video_full)
@@ -1645,6 +1689,7 @@ class TVWindow(Gtk.Window):
 
     def on_destroy(self, *_):
         self._closed = True
+        set_desktop_keyboard(False)
         if self._volume_timer is not None:
             GLib.source_remove(self._volume_timer)
         self._audio_workers.shutdown(wait=False, cancel_futures=True)
