@@ -267,6 +267,20 @@ ICON_MAX_BYTES = 1024 * 1024
 ICON_CACHE_SECONDS = 7 * 24 * 3600
 
 
+def set_desktop_keyboard(visible):
+    """Ask Raspberry Pi OS's Squeekboard to appear, without blocking GTK."""
+    if IS_WINDOWS or not os.environ.get("XDG_RUNTIME_DIR"):
+        return
+    try:
+        subprocess.Popen(
+            ["busctl", "--user", "call", "sm.puri.OSK0", "/sm/puri/OSK0",
+             "sm.puri.OSK0", "SetVisible", "b", str(bool(visible)).lower()],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        pass
+
+
 def parse_speaker_volume(output):
     """Parse wpctl's sink level, not mpv's independent stream volume."""
     match = re.fullmatch(r"\s*Volume:\s*([0-9]+(?:\.[0-9]+)?)\s*(\[MUTED\])?\s*", output)
@@ -1375,12 +1389,16 @@ class TVWindow(Gtk.Window):
 
         self.store_name_entry = Gtk.Entry()
         self.store_name_entry.set_placeholder_text("APP NAME (optional)")
+        self.store_name_entry.connect("focus-in-event",
+                                      lambda *_: set_desktop_keyboard(True))
         self.store_screen.pack_start(self.store_name_entry, False, False, 4)
 
         self.store_url_entry = Gtk.Entry()
         self.store_url_entry.set_placeholder_text("https://...")
         self.store_url_entry.connect(
             "activate", lambda *_: self.add_app_from_form())
+        self.store_url_entry.connect("focus-in-event",
+                                     lambda *_: set_desktop_keyboard(True))
         self.store_screen.pack_start(self.store_url_entry, False, False, 4)
 
         self.store_status = Gtk.Label(label=" TYPE A URL AND PRESS ENTER TO ADD ",
@@ -1482,6 +1500,8 @@ class TVWindow(Gtk.Window):
     # ================================================================
     def apply_screen(self):
         s = self.screen
+        if s != "STORE":
+            set_desktop_keyboard(False)
         self.home_screen.set_visible(s == "HOME")
         self.sidebar.set_visible(s == "LIVE" and not self.video_full)
         self.right.set_visible(s == "LIVE")
