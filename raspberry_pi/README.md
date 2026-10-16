@@ -45,8 +45,10 @@ bash keyboard-setup.sh
 
 The desktop keyboard is independent of Retro TV; text fields in compatible
 Wayland apps can request it automatically. Retro TV's App Store name/URL fields
-also request it when focused (after updating `tv.py`). For embedded WebKit
-websites and other Xwayland programs automatic focus detection is not guaranteed:
+also request it when focused (after updating `tv.py`). For embedded WebKit websites, Retro TV now detects editable HTML fields and
+requests the keyboard automatically on focus and hides it on blur. Dynamic
+sites and iframe behavior still require testing on the Pi. In other Xwayland
+programs outside Retro TV, automatic focus detection is not guaranteed:
 use the Pi panel's keyboard icon, or run `bash ~/raspberry_pi/keyboard-toggle.sh show`
 from a desktop terminal. Hide it with the helper's `hide` argument.
 
