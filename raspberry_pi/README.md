@@ -33,6 +33,31 @@ cp ~/raspberry_pi/tv.py ~/tv.py
 
 Close and reopen the app after copying.
 
+## Wayland system-wide on-screen keyboard (labwc)
+
+Your Pi desktop uses labwc/Wayland. Install Raspberry Pi OS's Squeekboard,
+not X11-only Onboard/Matchbox, from a terminal opened **on the Pi desktop**:
+
+```sh
+cd ~/raspberry_pi
+bash keyboard-setup.sh
+```
+
+The desktop keyboard is independent of Retro TV; text fields in compatible
+Wayland apps can request it automatically. Retro TV's App Store name/URL fields
+also request it when focused (after updating `tv.py`). For embedded WebKit
+websites and other Xwayland programs automatic focus detection is not guaranteed:
+use the Pi panel's keyboard icon, or run `bash ~/raspberry_pi/keyboard-toggle.sh show`
+from a desktop terminal. Hide it with the helper's `hide` argument.
+
+**Important:** Older Squeekboard builds can sit *behind actual fullscreen*
+windows in labwc. If the keyboard appears but is invisible, exit fullscreen
+with F11 or use a non-fullscreen maximized window. Keyboard support in custom
+websites also depends on the site's fields and the toolkit's Wayland integration.
+The joystick's mouse mode can click web fields and on-screen keys; pure
+joystick-arrow-only typing outside TV's own LIVE search is not implemented.
+This setup is for Raspberry Pi OS, not the Windows version of `tv.py`.
+
 ## Power button
 
 `setup.sh` still does not install the separate GPIO3 service. From this folder,
