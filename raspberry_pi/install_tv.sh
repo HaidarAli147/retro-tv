@@ -279,6 +279,20 @@ ICON_MAX_BYTES = 1024 * 1024
 ICON_CACHE_SECONDS = 7 * 24 * 3600
 
 
+def set_desktop_keyboard(visible):
+    """Ask Raspberry Pi OS's Squeekboard to appear, without blocking GTK."""
+    if IS_WINDOWS or not os.environ.get("XDG_RUNTIME_DIR"):
+        return
+    try:
+        subprocess.Popen(
+            ["busctl", "--user", "call", "sm.puri.OSK0", "/sm/puri/OSK0",
+             "sm.puri.OSK0", "SetVisible", "b", str(bool(visible)).lower()],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        pass
+
+
 def parse_speaker_volume(output):
     """Parse wpctl's sink level, not mpv's independent stream volume."""
     match = re.fullmatch(r"\s*Volume:\s*([0-9]+(?:\.[0-9]+)?)\s*(\[MUTED\])?\s*", output)
@@ -723,6 +737,8 @@ class Player:
             "--input-vo-keyboard=no", "--input-cursor=no",
             "--keep-open=no", "--idle=no",
             "--cache=yes", "--demuxer-max-bytes=64MiB",
+            "--demuxer-readahead-secs=30",
+            "--cache-pause=yes", "--cache-pause-wait=3",
             "--hls-bitrate=%d" % HLS_MAX_BITRATE,
             # Our own volume, and a socket so we can change it while playing
             "--volume=%d" % volume,
@@ -731,13 +747,23 @@ class Player:
         ] + video_args + _ao_args() + [url])
 
     def stop(self):
-        if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
+        proc, self.proc = self.proc, None
+        if proc and proc.poll() is None:
             try:
-                self.proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-        self.proc = None
+                proc.terminate()
+            except OSError:
+                return
+            # Reap the old player without blocking GTK for up to 3 seconds.
+            def reap():
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                    proc.wait()
+            threading.Thread(target=reap, daemon=True).start()
 
     @property
     def running(self):
@@ -764,6 +790,9 @@ class TVWindow(Gtk.Window):
         self.volume = START_VOLUME
         self.muted = False
         self.logo_slots = []
+        self._logo_generation = 0
+        self._logo_pending = set()
+        self._logo_lock = threading.Lock()
         self.search_row = None
         self.keyboard_open = False
         self.osk_row, self.osk_col = 1, 0
@@ -1096,7 +1125,10 @@ class TVWindow(Gtk.Window):
         first_call = items is None and not hasattr(self, "displayed")
         if items is None:
             items = self.channels
+        if not first_call and items == getattr(self, "displayed", None):
+            return
         self.displayed = items
+        self._logo_generation += 1
 
         for child in self.listbox.get_children():
             self.listbox.remove(child)
@@ -1174,18 +1206,37 @@ class TVWindow(Gtk.Window):
         row.grab_focus()
 
     def load_logos(self):
-        """Fetch logos off the main thread so the list appears immediately."""
+        """Load logos serially, cancelling stale list generations."""
         slots = list(self.logo_slots)
+        generation = self._logo_generation
 
         def worker():
             for img, url in slots:
+                if generation != self._logo_generation:
+                    return
                 if not url:
                     continue
                 path = cached_logo(url)
-                if path:
-                    GLib.idle_add(self._set_logo, img, path)
+                if path and generation == self._logo_generation:
+                    GLib.idle_add(self._set_logo_if_current, img, path, generation)
 
-        threading.Thread(target=worker, daemon=True).start()
+        # Only one logo worker at a time: avoid spawning hundreds on search.
+        with self._logo_lock:
+            if self._logo_pending:
+                self._logo_pending.clear()
+            self._logo_pending.add(generation)
+        def run():
+            try:
+                worker()
+            finally:
+                with self._logo_lock:
+                    self._logo_pending.discard(generation)
+        threading.Thread(target=run, daemon=True).start()
+
+    def _set_logo_if_current(self, img, path, generation):
+        if generation == self._logo_generation:
+            return self._set_logo(img, path)
+        return False
 
     def _set_logo(self, img, path):
         try:
@@ -1350,12 +1401,16 @@ class TVWindow(Gtk.Window):
 
         self.store_name_entry = Gtk.Entry()
         self.store_name_entry.set_placeholder_text("APP NAME (optional)")
+        self.store_name_entry.connect("focus-in-event",
+                                      lambda *_: set_desktop_keyboard(True))
         self.store_screen.pack_start(self.store_name_entry, False, False, 4)
 
         self.store_url_entry = Gtk.Entry()
         self.store_url_entry.set_placeholder_text("https://...")
         self.store_url_entry.connect(
             "activate", lambda *_: self.add_app_from_form())
+        self.store_url_entry.connect("focus-in-event",
+                                     lambda *_: set_desktop_keyboard(True))
         self.store_screen.pack_start(self.store_url_entry, False, False, 4)
 
         self.store_status = Gtk.Label(label=" TYPE A URL AND PRESS ENTER TO ADD ",
@@ -1457,6 +1512,8 @@ class TVWindow(Gtk.Window):
     # ================================================================
     def apply_screen(self):
         s = self.screen
+        if s != "STORE":
+            set_desktop_keyboard(False)
         self.home_screen.set_visible(s == "HOME")
         self.sidebar.set_visible(s == "LIVE" and not self.video_full)
         self.right.set_visible(s == "LIVE")
@@ -1638,6 +1695,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 TV_PY_EOF_9f3
 
 echo "Installing channels.m3u ..."
