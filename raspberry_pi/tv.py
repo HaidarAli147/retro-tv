@@ -1434,7 +1434,7 @@ class TVWindow(Gtk.Window):
         self.store_name_entry = Gtk.Entry()
         self.store_name_entry.set_placeholder_text("APP NAME (optional)")
         self.store_name_entry.connect("focus-in-event",
-                                      lambda *_: set_desktop_keyboard(True))
+                                      self._store_field_focused)
         self.store_screen.pack_start(self.store_name_entry, False, False, 4)
 
         self.store_url_entry = Gtk.Entry()
@@ -1442,13 +1442,14 @@ class TVWindow(Gtk.Window):
         self.store_url_entry.connect(
             "activate", lambda *_: self.add_app_from_form())
         self.store_url_entry.connect("focus-in-event",
-                                     lambda *_: set_desktop_keyboard(True))
+                                     self._store_field_focused)
         self.store_screen.pack_start(self.store_url_entry, False, False, 4)
 
         self.store_status = Gtk.Label(label=" TYPE A URL AND PRESS ENTER TO ADD ",
                                        xalign=0)
         self.store_status.get_style_context().add_class("status")
         self.store_screen.pack_start(self.store_status, False, False, 4)
+        self._create_store_keyboard()
 
         caption = Gtk.Label(label=" INSTALLED APPS ", xalign=0)
         caption.get_style_context().add_class("hint")
@@ -1469,6 +1470,59 @@ class TVWindow(Gtk.Window):
             xalign=0)
         store_hint.get_style_context().add_class("hint")
         self.store_screen.pack_start(store_hint, False, False, 0)
+
+    def _create_store_keyboard(self):
+        """Always available within Store, even when Wayland OSK cannot overlay Xwayland."""
+        self._store_keyboard_target = self.store_name_entry
+        self.store_keyboard = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        for letters in ("1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3)
+            row.set_halign(Gtk.Align.CENTER)
+            for char in letters:
+                button = Gtk.Button(label=char)
+                button.set_focus_on_click(False)
+                button.set_size_request(45, 40)
+                button.connect("clicked", self._store_keyboard_press, char)
+                row.pack_start(button, False, False, 0)
+            self.store_keyboard.pack_start(row, False, False, 0)
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        row.set_halign(Gtk.Align.CENTER)
+        for label, value in (("SPACE", " "), ((".", ".")), (("/", "/")),
+                             ((":", ":")), (("-", "-")), (("_", "_")),
+                             (("@", "@")), (("BACK", "BACK")),
+                             (("CLEAR", "CLEAR")), (("ADD APP", "ADD"))):
+            button = Gtk.Button(label=label)
+            button.set_focus_on_click(False)
+            button.connect("clicked", self._store_keyboard_press, value)
+            row.pack_start(button, False, False, 0)
+        self.store_keyboard.pack_start(row, False, False, 0)
+        self.store_screen.pack_start(self.store_keyboard, False, False, 6)
+
+    def _store_field_focused(self, widget, _event):
+        self._store_keyboard_target = widget
+        set_desktop_keyboard(True)
+        return False
+
+    def _store_keyboard_press(self, _button, value):
+        if value == "ADD":
+            self.add_app_from_form()
+            return
+        target = self._store_keyboard_target
+        if value == "CLEAR":
+            target.set_text("")
+        elif value == "BACK":
+            start, end = target.get_selection_bounds()
+            pos = target.get_position()
+            if start != end:
+                target.delete_text(start, end)
+                target.set_position(start)
+            elif pos > 0:
+                target.delete_text(pos - 1, pos)
+        else:
+            pos = target.get_position()
+            target.insert_text(value, pos)
+            target.set_position(pos + len(value))
+        target.grab_focus()
 
     def refresh_store_list(self):
         for child in self.store_listbox.get_children():
