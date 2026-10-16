@@ -1511,13 +1511,10 @@ class TVWindow(Gtk.Window):
         if value == "CLEAR":
             target.set_text("")
         elif value == "BACK":
-            start, end = target.get_selection_bounds()
             pos = target.get_position()
-            if start != end:
-                target.delete_text(start, end)
-                target.set_position(start)
-            elif pos > 0:
+            if pos > 0:
                 target.delete_text(pos - 1, pos)
+                target.set_position(pos - 1)
         else:
             pos = target.get_position()
             target.insert_text(value, pos)
