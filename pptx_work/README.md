@@ -1,21 +1,18 @@
-Warning: fs was declared with const; use let for reassignable variables.
 # Retro TV fair presentation
 
-- `deck_redesigned_source.pptx` preserves the supplied presentation.
-- `Retro-TV-Project-Fair-Deck.pptx` is the refreshed 29-slide project-fair deck.
-- `update_fair_deck.py` applies the same wording and palette refresh to the source file.
+- `deck_redesigned_source.pptx` is the supplied source deck.
+- `Retro-TV-Project-Fair-Deck.pptx` is the updated 29-slide project-fair presentation.
+- `update_fair_deck.py` is the earlier content-refresh script; it does not reproduce the latest TV-interface styling.
 
-Run the refresh from this folder with:
+The latest deck follows the current TV app interface: teal screens, silver panels,
+navy selection bars, yellow highlights and monospace text. The cover includes an
+editable TV interface graphic, and the software-versus-hardware comparison uses
+editable interface-style bars.
 
-```sh
-python3 update_fair_deck.py deck_redesigned_source.pptx Retro-TV-Project-Fair-Deck.pptx
-```
+The deck reflects the current Raspberry Pi 4, HDMI monitor, Arduino Uno controls,
+GPIO3 power button and 264-entry playlist. It describes the merged stream-buffer
+and player-cleanup updates, and says playback testing on the replacement Pi is
+still pending.
 
-The deck reflects the current 22-inch HDMI monitor, replacement Raspberry Pi 4,
-completed frame as reported by the user, Arduino Uno controls, direct GPIO3
-power button, and current 264-entry IPTV playlist. LIVE TV freezing is described
-as ongoing playback work. The color palette uses warm charcoal, cream, terracotta,
-brass and muted teal; slide layout and photos are retained.
-
-The refresh was checked for ZIP integrity, XML parsing and expected project facts.
-PDF rendering and physical-device playback were not verified in this environment.
+Validation: all 29 slides rendered; PPTX package, slide geometry and font checks
+passed. Playback on the physical Pi has not been tested.
