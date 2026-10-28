@@ -48,7 +48,7 @@ Retro TV turns a Raspberry Pi and HDMI monitor into a vintage-style TV interface
 | [arduino/](arduino/) | Current Uno firmware and separate diagnostic or older sketches |
 | [enclosure_work/](enclosure_work/) | Enclosure models and design review |
 | [docs/](docs/) | Software notes and historical build guide |
-| [pptx_work/](pptx_work/) | Project-fair PowerPoint, supplied source deck and presentation notes |
+| [pptx_work/](pptx_work/) | Current project-fair PowerPoint and presentation source materials |
 | [tests/](tests/) | Offline app checks |
 | [downloads_archive/](downloads_archive/) | Historical snapshots; not installation sources |
 
@@ -66,7 +66,7 @@ Future app changes must also update the embedded source in `raspberry_pi/install
 
 The frame is reported complete. The current build uses a 22-inch HDMI monitor; other sizes may need different enclosure measurements. See the [22-inch design review](enclosure_work/DESIGN_REVIEW_22IN.md). CAD monitor dimensions are still placeholders, not final cutting measurements.
 
-The latest project-fair deck describes the merged stream-buffer and player-cleanup updates. Playback still needs testing on the replacement Pi.
+The current 12-slide project-fair deck is the owner-supplied replacement documented in `pptx_work/README.md`. Playback still needs testing on the replacement Pi.
 
 ## Notes
 
