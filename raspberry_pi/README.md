@@ -33,6 +33,103 @@ cp ~/raspberry_pi/tv.py ~/tv.py
 
 Close and reopen the app after copying.
 
+## Update only `tv.py` from GitHub (existing Raspberry Pi installation)
+
+Use this procedure on the **Raspberry Pi graphical desktop**, as the normal desktop
+user. It updates only the installed `~/tv.py`, **not** your `channels.m3u`,
+saved web apps, Arduino firmware, services, or the rest of the repository.
+Do **not** run `setup.sh` just to update this one file: that installer also
+copies the playlist and sound file.
+
+**Step 1: Check/install dependencies** (first installation only; requires internet):
+
+```sh
+sudo apt update
+sudo apt install -y mpv python3-gi gir1.2-gtk-3.0 gir1.2-webkit2-4.1 network-manager
+```
+
+`NetworkManager` must manage the Wi-Fi device for the in-app Wi-Fi settings
+to function. Avoid replacing an already-working network configuration just
+for this update. The existing Arduino bridge and PipeWire installation are
+separate and are not reinstalled by these commands.
+
+**Step 2: Back up the running copy** (run before replacing it):
+
+```sh
+cp ~/tv.py ~/tv.py.backup
+```
+
+If `~/tv.py` does not exist yet, skip that command. The procedure otherwise
+assumes Retro-TV is already set up.
+
+**Step 3: Download just the Python file** into a temporary path:
+
+```sh
+curl -fL https://raw.githubusercontent.com/HaidarAli147/retro-tv/main/raspberry_pi/tv.py -o ~/tv.py.new
+```
+
+**Step 4: Check Python syntax, then install only that file:**
+
+```sh
+python3 -m py_compile ~/tv.py.new
+mv ~/tv.py.new ~/tv.py
+```
+
+Run these only if the download succeeded. If compilation fails, do not run
+the `mv` command; leave the previous `~/tv.py` in place. A successful syntax
+check is **not** a full hardware or UI functionality test.
+
+**Step 5: Close the old app and launch the updated one:**
+
+```sh
+python3 ~/tv.py
+```
+
+Do not run the graphical app with `sudo`. If you have a desktop autostart
+entry from `setup.sh`, it already launches `~/tv.py` at login; closing
+and reopening the TV app is enough.
+
+**Restore the previous version** if something goes wrong:
+
+```sh
+cp ~/tv.py.backup ~/tv.py
+python3 ~/tv.py
+```
+
+**Optional: if you are working inside a local Git checkout** and want to
+update *only its tracked application file* without checking out other paths:
+
+```sh
+cd ~/retro-tv
+git fetch origin main
+git restore --source=origin/main -- raspberry_pi/tv.py
+```
+
+This option updates `~/retro-tv/raspberry_pi/tv.py` and does **not**
+automatically update the installed `~/tv.py`; copy it there explicitly only
+if that is the intended source. `git restore` overwrites any uncommitted
+local edits to the named file.
+
+### New interface features and current testing status
+
+The current `tv.py` source includes a Shift-capable on-screen keyboard for
+Retro-TV text entry, a SETTINGS tile with Wi-Fi scanning/connection via
+`nmcli`, configurable Esc / Back behavior, and an App Store form to append
+live channels to the currently selected M3U playlist. The app is also intended
+to show an on-screen keyboard in embedded web forms.
+
+Controls: move/select with the joystick, use SHIFT to change letter case,
+and use DONE to finish text entry. Esc/long-press backs out of a step; the
+Settings screen can switch between **back one step** and **always home**.
+The app's existing LIVE TV search keyboard remains available.
+
+**Unverified:** these combined changes were committed from source review, not
+tested on a physical Raspberry Pi. Some web login fields, joystick focus,
+NetworkManager configurations, and playback may need adjustment after testing.
+The `raspberry_pi/install_tv.sh` embedded app copy has not been synchronized
+with this newer `tv.py`; use the single-file update above rather than that
+installer when you need these changes.
+
 ## Power button
 
 `setup.sh` still does not install the separate GPIO3 service. From this folder,
