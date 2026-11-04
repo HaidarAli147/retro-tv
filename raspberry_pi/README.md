@@ -119,9 +119,15 @@ live channels to the currently selected M3U playlist. The app is also intended
 to show an on-screen keyboard in embedded web forms.
 
 Controls: move/select with the joystick, use SHIFT to change letter case,
-and use DONE to finish text entry. Esc/long-press backs out of a step; the
-Settings screen can switch between **back one step** and **always home**.
-The app's existing LIVE TV search keyboard remains available.
+and use DONE to finish text entry. **DONE on the App Store URL field now
+submits the app**, just like Enter. The visible **ADD WEBSITE APP** control
+also submits the name/URL. Choose **+ ADD NEW LIVE TV CHANNEL**, fill the
+channel name, stream URL, optional category/logo, then focus **SAVE CHANNEL**
+to append the stream to the M3U playlist. The channel editor is above the
+installed-app list so it remains reachable. Up/down moves through App Store
+actions; joystick press activates the selected action. Esc/long-press backs
+out of a step; Settings can switch between **back one step** and **always
+home**. LIVE TV search keyboard remains available.
 
 **Unverified:** these combined changes were committed from source review, not
 tested on a physical Raspberry Pi. Some web login fields, joystick focus,
