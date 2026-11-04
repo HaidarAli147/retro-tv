@@ -1428,6 +1428,15 @@ class TVWindow(Gtk.Window):
             "activate", lambda *_: self.add_app_from_form())
         self.store_screen.pack_start(self.store_url_entry, False, False, 4)
         self._osk_entry(self.store_url_entry, "APP URL")
+        # Both actions stay above the scrollable installed-apps list.
+        self.store_add_button = Gtk.Button(label="ADD WEBSITE APP")
+        self.store_add_button.connect("clicked", lambda *_: self.add_app_from_form())
+        self.store_screen.pack_start(self.store_add_button, False, False, 4)
+        self.store_channel_button = Gtk.Button(label="+ ADD NEW LIVE TV CHANNEL")
+        self.store_channel_button.connect(
+            "clicked", lambda *_: self._channel_show(not self._channel_expanded))
+        self.store_screen.pack_start(self.store_channel_button, False, False, 4)
+        self.store_channel_button.set_can_focus(True)
 
         self.store_status = Gtk.Label(label=" TYPE A URL AND PRESS ENTER TO ADD ",
                                        xalign=0)
@@ -1454,6 +1463,9 @@ class TVWindow(Gtk.Window):
         store_hint.get_style_context().add_class("hint")
         self.store_screen.pack_start(store_hint, False, False, 0)
         self._channel_form_build()
+        # Move the channel editor above the expanding list to keep it visible.
+        self.store_screen.reorder_child(self.channel_box, 5)
+        scroller.set_min_content_height(130)
 
     def refresh_store_list(self):
         for child in self.store_listbox.get_children():
@@ -1507,7 +1519,8 @@ class TVWindow(Gtk.Window):
         self.rebuild_home_apps()
         self.refresh_store_list()
         self.store_status.set_text(" ADDED " + name.upper() + " ")
-        self.store_name_entry.grab_focus()
+        self._blocked_field = self.store_url_entry
+        self.store_add_button.grab_focus()
 
     def delete_selected_app(self):
         row = self.store_listbox.get_selected_row()
@@ -1637,12 +1650,22 @@ class TVWindow(Gtk.Window):
         d.show_all()
         highlight()
         d.grab_focus()
-        d.run()
+        result = d.run()
         self._blocked_field = entry
         d.destroy()
         self._typing_dialog = None
         if self.screen=="STORE":
-            self.store_listbox.grab_focus()
+            if result == Gtk.ResponseType.OK and entry is self.store_url_entry:
+                # DONE on App URL performs the same action as pressing Enter.
+                GLib.idle_add(self.add_app_from_form)
+            elif result == Gtk.ResponseType.OK and entry in self.channel_inputs:
+                # Keep the editor visible and move to the next input/Save.
+                idx = self.channel_inputs.index(entry)
+                follow = (self.channel_inputs[idx + 1] if idx + 1 < len(self.channel_inputs)
+                          else self.channel_save_button)
+                GLib.idle_add(follow.grab_focus)
+            else:
+                self.store_add_button.grab_focus()
         elif self.screen=="SETTINGS":
             self.wifi_list.grab_focus()
         return False
@@ -1792,9 +1815,6 @@ class TVWindow(Gtk.Window):
         return False
 
     def _channel_form_build(self):
-        toggle=Gtk.Button(label="+ ADD NEW LIVE TV CHANNEL")
-        toggle.connect("clicked",lambda *_:self._channel_show(not self._channel_expanded))
-        self.store_screen.pack_start(toggle,False,False,4)
         self.channel_box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=4)
         self.channel_box.set_no_show_all(True)
         self.store_screen.pack_start(self.channel_box,False,False,0)
@@ -1807,6 +1827,7 @@ class TVWindow(Gtk.Window):
             self.channel_inputs.append(entry)
         save=Gtk.Button(label="SAVE CHANNEL")
         save.connect("clicked",lambda *_:self._channel_save())
+        self.channel_save_button = save
         self.channel_box.pack_start(save,False,False,0)
         self.channel_status=Gtk.Label(label="",xalign=0)
         self.channel_box.pack_start(self.channel_status,False,False,0)
@@ -1816,9 +1837,11 @@ class TVWindow(Gtk.Window):
         self._channel_expanded=bool(visible)
         if visible:
             self.channel_box.show_all()
+            self._blocked_field = None
+            self.channel_inputs[0].grab_focus()
         else:
             self.channel_box.hide()
-            self.store_listbox.grab_focus()
+            self.store_channel_button.grab_focus()
 
     def _channel_save(self):
         name,url,category,logo=[x.get_text().strip() for x in self.channel_inputs]
@@ -1856,7 +1879,9 @@ class TVWindow(Gtk.Window):
                 f.write(record.encode("utf-8"))
             self.channels=load_playlist(target)
             self.populate(self.channels)
-            self.channel_status.set_text("CHANNEL SAVED")
+            self.channel_status.set_text("CHANNEL SAVED TO LIVE TV")
+            self._blocked_field = self.channel_inputs[1]
+            self.channel_save_button.grab_focus()
         except OSError as exc:
             self.channel_status.set_text("SAVE FAILED: "+str(exc))
 
@@ -1881,7 +1906,8 @@ class TVWindow(Gtk.Window):
         elif s == "WEB" and self.webview is not None:
             self.webview.grab_focus()
         elif s == "STORE":
-            self.store_listbox.grab_focus()
+            self._blocked_field = None
+            self.store_add_button.grab_focus()
         elif s == "SETTINGS":
             self.wifi_list.grab_focus()
         elif s == "LIVE" and not self.video_full:
@@ -1947,14 +1973,45 @@ class TVWindow(Gtk.Window):
 
         if self.screen == "STORE":
             focused = self.get_focus()
-            if focused in (self.store_name_entry, self.store_url_entry):
-                return False              # let normal typing happen
+            if focused in (self.store_name_entry, self.store_url_entry,
+                           *self.channel_inputs):
+                if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+                    self._blocked_field = None
+                    self._osk_modal(focused, "TEXT ENTRY")
+                    return True
+                # Physical keyboard typing into the entry remains possible.
+                return False
+            if focused is self.store_listbox or isinstance(focused, Gtk.ListBoxRow):
+                if key in (Gdk.KEY_Up, Gdk.KEY_Down):
+                    self._move_listbox(
+                        self.store_listbox, 1 if key == Gdk.KEY_Down else -1)
+                    return True
+                if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+                    self.delete_selected_app()
+                    return True
+            actions = [self.store_name_entry, self.store_url_entry,
+                       self.store_add_button, self.store_channel_button]
+            if self._channel_expanded:
+                actions += list(self.channel_inputs) + [self.channel_save_button]
+            actions += [self.store_listbox]
             if key in (Gdk.KEY_Up, Gdk.KEY_Down):
-                self._move_listbox(
-                    self.store_listbox, 1 if key == Gdk.KEY_Down else -1)
+                try:
+                    pos = actions.index(focused)
+                except ValueError:
+                    pos = actions.index(self.store_add_button)
+                target = actions[(pos + (1 if key == Gdk.KEY_Down else -1)) % len(actions)]
+                self._blocked_field = None
+                target.grab_focus()
                 return True
             if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
-                self.delete_selected_app()
+                if focused is self.store_add_button:
+                    self.add_app_from_form()
+                elif focused is self.store_channel_button:
+                    self._channel_show(not self._channel_expanded)
+                elif focused is self.channel_save_button:
+                    self._channel_save()
+                elif focused is self.store_listbox:
+                    self.delete_selected_app()
                 return True
             return False
 
