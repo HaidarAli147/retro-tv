@@ -167,3 +167,14 @@ to request shutdown. Physical operation remains to be checked on your Pi.
 
 If the Pi still stops at a rainbow or black screen, transferring these files
 will not repair that boot problem. First get it booting into its desktop.
+
+
+## Goaaal Live Match Viewer (camera feed, not scoreboard)
+
+Retro TV's **GOAAAL LIVE** home tile opens `https://appendhub.com/go-wall/app/?match-view`. It is a camera-only viewer for matches streamed from the Goaaal VAR controller, not a scoreboard or an IPTV channel.
+
+1. Start a Goaaal display/controller session elsewhere and connect the VAR camera phones.
+2. Open **GOAAAL LIVE** on Retro TV; type the eight-digit match code shown on the controller in **Live Match Viewer**, then select **Connect to live match**.
+3. On the Goaaal controller, choose **📺 Send live match** under the camera you want on Retro TV. You can change cameras without leaving the viewer.
+
+The Pi needs network access and a WebRTC-capable browser engine. The embedded WebKitGTK view may lack suitable codecs or WebRTC support on some Raspberry Pi OS images. If it fails, use Chromium on the Pi to open the same viewer link; this path is not a guaranteed hardware-accelerated mpv stream. The Goaaal website and Retro TV additions must both be deployed to use the new feature.
