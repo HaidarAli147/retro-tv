@@ -887,6 +887,7 @@ class TVWindow(Gtk.Window):
         self.home_apps = (
             [{"kind": "live", "name": "LIVE TV", "url": None}] +
             [{"kind": "web", "name": "TOD", "url": TOD_URL}] +
+            [{"kind": "web", "name": "GOAAAL LIVE", "url": "https://appendhub.com/go-wall/app/?match-view"}] +
             [{"kind": "web", "name": a.get("name") or "APP", "url": a["url"]}
              for a in custom if a.get("url")] +
             [{"kind": "store", "name": "APP STORE", "url": None}]
