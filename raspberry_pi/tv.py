@@ -6,6 +6,8 @@ HOME  - a row of app tiles: LIVE TV, TOD, any apps you have added, and
 LIVE  - channels from an M3U, played by mpv rendered inside this window.
 WEB   - TOD, or any app added through the store, in an embedded page.
 STORE - type a name and a URL to add a new app to the home screen.
+REMOTE - QR code + 6-digit code: phones on the same Wi-Fi become a
+         remote (see remote_server.py and remote_page.html).
 
 Controls (all reachable from the joystick alone):
     left / right    move along the home row / do nothing elsewhere
@@ -55,6 +57,12 @@ for _ver in ("4.1", "4.0"):
     except (ValueError, ImportError):
         continue
 
+# Phone remote is optional: tv.py keeps working if its files are missing.
+try:
+    import remote_server
+except Exception:  # missing file or a broken copy must never stop the TV
+    remote_server = None
+
 DEFAULT_PLAYLIST = os.path.expanduser("~/channels.m3u")
 if not os.path.exists(DEFAULT_PLAYLIST):
     # No copy in the home folder: use the one sitting next to this script.
@@ -86,6 +94,14 @@ APPS_FILE = os.path.expanduser("~/.config/brack-tv/apps.json")
 # Silver panels, hard bevels, navy selection, teal surround, monospace type.
 CSS = b"""
 window, .root { background-color: #008080; }
+
+/* Base size for plain widgets (labels, buttons, lists, entries), equal to the
+   theme's normal look at 720p, so automatic scaling enlarges them too. */
+window, dialog { font-size: 15px; }
+button { padding: 4px 10px; min-height: 24px; min-width: 24px; }
+entry { padding: 2px 8px; min-height: 30px; }
+progressbar trough, progressbar progress { min-height: 8px; }
+progressbar text { font-size: 13px; }
 
 .sidebar {
     background-color: #c0c0c0;
@@ -219,6 +235,46 @@ row:selected .item, row:selected .item-sub { color: #ffff00; }
 .tile-selected .tile-icon,
 .tile-selected .tile-name { color: #ffff00; }
 
+/* ---- settings: sound output ---- */
+.sound-value {
+    background-color: #000080;
+    color: #ffff00;
+    font-family: monospace;
+    font-size: 22px;
+    font-weight: 700;
+    padding: 4px 16px;
+}
+
+.settings-row { padding: 4px 8px; }
+.settings-row-active {
+    background-color: #c0c0c0;
+    border: 3px solid #ffff00;
+}
+
+/* ---- phone remote screen ---- */
+.qr-frame {
+    background-color: #ffffff;
+    border-top: 3px solid #404040;
+    border-left: 3px solid #404040;
+    border-bottom: 3px solid #ffffff;
+    border-right: 3px solid #ffffff;
+    padding: 8px;
+}
+.remote-code {
+    background-color: #000080;
+    color: #ffff00;
+    font-family: monospace;
+    font-size: 44px;
+    font-weight: 700;
+    padding: 8px 20px;
+}
+.remote-info {
+    color: #ffffff;
+    font-family: monospace;
+    font-size: 19px;
+    font-weight: 700;
+}
+
 /* ---- on-screen keyboard ---- */
 .key {
     background-color: #c0c0c0;
@@ -259,6 +315,95 @@ entry {
 
 
 CHIME = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chime.wav")
+# ---- automatic UI scaling ----------------------------------------------------
+# Every size in this file was designed for a 720p screen. On a bigger screen
+# (1080p monitor, 4K TV) everything is multiplied so it looks the same size.
+UI_DESIGN_HEIGHT = 720
+UI_SCALE = 1.0
+_RESCALE_HOOKS = []        # functions that re-apply sizes when the scale changes
+_CSS_PROVIDER = None
+
+
+def ui_scale_for(screen_height):
+    if not screen_height or screen_height <= UI_DESIGN_HEIGHT:
+        return 1.0
+    return round(min(4.0, screen_height / UI_DESIGN_HEIGHT), 2)
+
+
+def px(n):
+    """A design size (720p pixels) in real screen pixels."""
+    if n <= 0:
+        return n
+    return max(1, int(round(n * UI_SCALE)))
+
+
+# SCREEN SIZE in Settings: AUTO fits the screen, or a fixed percentage.
+SCALE_CHOICES = ["auto", 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5, 4.0]
+
+
+def clean_scale_choice(choice):
+    return choice if choice in SCALE_CHOICES else "auto"
+
+
+def effective_scale(choice, screen_height):
+    choice = clean_scale_choice(choice)
+    return ui_scale_for(screen_height) if choice == "auto" else float(choice)
+
+
+def scale_choice_label(choice, screen_height):
+    choice = clean_scale_choice(choice)
+    percent = round(effective_scale(choice, screen_height) * 100)
+    return "AUTO (%d%%)" % percent if choice == "auto" else "%d%%" % percent
+
+
+def next_scale_choice(choice, delta):
+    i = SCALE_CHOICES.index(clean_scale_choice(choice))
+    return SCALE_CHOICES[(i + delta) % len(SCALE_CHOICES)]
+
+
+def scale_css(css, factor):
+    if factor == 1.0:
+        return css
+    return re.sub(rb"(\d+(?:\.\d+)?)px",
+                  lambda m: b"%dpx" % round(float(m.group(1)) * factor), css)
+
+
+def scaled(apply):
+    """Run apply() now and again whenever the UI scale changes."""
+    apply()
+    _RESCALE_HOOKS.append(apply)
+    return apply
+
+
+def screen_height_now(window=None):
+    """Height of the screen the TV is on, as the app sees it."""
+    display = Gdk.Display.get_default()
+    if display is None:
+        return 0
+    monitor = None
+    gdk_window = window.get_window() if window is not None else None
+    if gdk_window is not None:
+        monitor = display.get_monitor_at_window(gdk_window)
+    if monitor is None:
+        monitor = display.get_primary_monitor() or display.get_monitor(0)
+    if monitor is None:
+        return 0
+    return monitor.get_geometry().height * monitor.get_scale_factor()
+
+
+def set_ui_scale(factor):
+    """Apply a new scale to the stylesheet and every registered widget."""
+    global UI_SCALE
+    UI_SCALE = factor
+    if _CSS_PROVIDER is not None:
+        _CSS_PROVIDER.load_from_data(scale_css(CSS, factor))
+    for hook in list(_RESCALE_HOOKS):
+        try:
+            hook()
+        except Exception:
+            pass
+
+
 LOGO_CACHE = os.path.expanduser("~/.cache/brack-tv-logos")
 LOGO_W, LOGO_H = 76, 50
 
@@ -288,6 +433,188 @@ def read_speaker_volume():
         return parse_speaker_volume(result.stdout)
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
+
+
+# ---- SOUND OUTPUT (Settings) ----------------------------------------------
+# Everything (mpv, the chime, web apps, the volume knob) follows PipeWire's
+# default output, so choosing an output only has to change that default.
+_SINK_LINE = re.compile(r"^[\s│]*(\*)?\s*(\d+)\.\s+(.*?)\s*(\[vol:[^\]]*\])?\s*$")
+
+
+def parse_sinks(status_text):
+    """Audio sinks from `wpctl status`: [{"id", "name", "default"}, ...]."""
+    sinks, section, sub = [], None, None
+    for line in status_text.splitlines():
+        if line and not line[0].isspace():
+            section, sub = line.strip(), None          # Audio / Video / Settings
+            continue
+        header = re.match(r"^[\s│]*[├└]─\s*([\w ]+):", line)
+        if header:
+            sub = header.group(1).strip()
+            continue
+        if section == "Audio" and sub == "Sinks":
+            m = _SINK_LINE.match(line)
+            if m:
+                sinks.append({"id": int(m.group(2)), "name": m.group(3),
+                              "default": bool(m.group(1))})
+    return sinks
+
+
+def sink_label(name):
+    """Short, clear names for the TV screen."""
+    hdmi = re.search(r"\((HDMI[^)]*)\)", name)
+    if hdmi:
+        return "TV / MONITOR (%s)" % hdmi.group(1).upper()
+    if name.strip().lower() == "built-in audio stereo":
+        return "SPEAKER (3.5MM JACK)"
+    return name.upper()
+
+
+def next_sink(sinks, delta):
+    """The output after (or before) the current default, wrapping around."""
+    if not sinks:
+        return None
+    current = next((i for i, x in enumerate(sinks) if x["default"]), 0)
+    return sinks[(current + delta) % len(sinks)]
+
+
+def saved_sink_to_apply(sinks, saved_name):
+    """Id to switch to at start-up, or None if it is missing or already on."""
+    for sink in sinks:
+        if saved_name and sink["name"] == saved_name:
+            return None if sink["default"] else sink["id"]
+    return None
+
+
+def list_sinks():
+    if IS_WINDOWS:
+        return []
+    try:
+        result = subprocess.run(["wpctl", "status"], capture_output=True, text=True,
+                                check=True, timeout=2, env=dict(os.environ, LC_ALL="C"))
+        return parse_sinks(result.stdout)
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
+def set_default_sink(sink_id):
+    if IS_WINDOWS:
+        return False
+    try:
+        subprocess.run(["wpctl", "set-default", str(int(sink_id))],
+                       capture_output=True, check=True, timeout=2)
+        return True
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+
+
+# ---- RESOLUTION (Settings) --------------------------------------------------
+# The Pi's labwc desktop is Wayland; wlr-randr reads and sets the HDMI mode.
+RES_CONFIRM_SECONDS = 15     # a new resolution reverts unless OK is pressed
+
+
+def _mode(w, h, refresh, current=False, preferred=False):
+    return {"w": int(w), "h": int(h), "refresh": float(refresh),
+            "current": bool(current), "preferred": bool(preferred)}
+
+
+def parse_outputs_json(text):
+    """`wlr-randr --json` -> [{"name", "enabled", "modes": [...]}]."""
+    data = json.loads(text)
+    if not isinstance(data, list):
+        raise ValueError("unexpected wlr-randr json")
+    outputs = []
+    for item in data:
+        modes = [_mode(m["width"], m["height"], m.get("refresh", 0),
+                       m.get("current"), m.get("preferred"))
+                 for m in item.get("modes", [])]
+        outputs.append({"name": item["name"], "enabled": bool(item.get("enabled")),
+                        "modes": modes})
+    return outputs
+
+
+def parse_outputs_text(text):
+    """Plain `wlr-randr` output (older versions without --json)."""
+    outputs, current = [], None
+    for line in text.splitlines():
+        if line and not line[0].isspace():
+            current = {"name": line.split()[0], "enabled": False, "modes": []}
+            outputs.append(current)
+            continue
+        if current is None:
+            continue
+        stripped = line.strip()
+        if stripped.startswith("Enabled:"):
+            current["enabled"] = stripped.split(":", 1)[1].strip() == "yes"
+            continue
+        m = re.match(r"^(\d+)x(\d+) px, ([\d.]+) Hz(?: \((.*)\))?$", stripped)
+        if m:
+            flags = m.group(4) or ""
+            current["modes"].append(_mode(m.group(1), m.group(2), m.group(3),
+                                          "current" in flags, "preferred" in flags))
+    return outputs
+
+
+def main_output(outputs):
+    """The screen the TV is on: the first enabled output with modes."""
+    return next((o for o in outputs if o["enabled"] and o["modes"]), None)
+
+
+def screen_modes(output):
+    """One entry per size (the current one, else the fastest), biggest first."""
+    best = {}
+    for m in output["modes"]:
+        key = (m["w"], m["h"])
+        old = best.get(key)
+        if old is None or (m["current"] and not old["current"]) or \
+                (not old["current"] and m["refresh"] > old["refresh"]):
+            best[key] = m
+    return sorted(best.values(), key=lambda m: (m["w"] * m["h"], m["w"]), reverse=True)
+
+
+def mode_label(m):
+    return "%d x %d" % (m["w"], m["h"])
+
+
+def mode_arg(m):
+    return "%dx%d@%.6fHz" % (m["w"], m["h"], m["refresh"])
+
+
+def saved_mode_to_apply(output, saved):
+    """Mode to restore at start-up, or None if missing, not offered or already on."""
+    if not output or not isinstance(saved, dict) or saved.get("output") != output["name"]:
+        return None
+    for m in screen_modes(output):
+        if (m["w"], m["h"]) == (saved.get("w"), saved.get("h")):
+            return None if m["current"] else m
+    return None
+
+
+def list_outputs():
+    if IS_WINDOWS:
+        return []
+    for cmd, parse in ((["wlr-randr", "--json"], parse_outputs_json),
+                       (["wlr-randr"], parse_outputs_text)):
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True,
+                                    timeout=5, env=dict(os.environ, LC_ALL="C"))
+            return parse(result.stdout)
+        except FileNotFoundError:
+            return []
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+            continue
+    return []
+
+
+def set_mode(output_name, m):
+    if IS_WINDOWS:
+        return False
+    try:
+        subprocess.run(["wlr-randr", "--output", output_name, "--mode", mode_arg(m)],
+                       capture_output=True, check=True, timeout=8)
+        return True
+    except (OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError):
+        return False
 
 
 def http_icon_url(base, href):
@@ -340,7 +667,7 @@ def read_icon_resource(url):
 
 def decode_app_icon(data):
     loader = GdkPixbuf.PixbufLoader.new()
-    loader.set_size(64, 64)
+    loader.set_size(px(64), px(64))
     loader.write(data)
     loader.close()
     pixbuf = loader.get_pixbuf()
@@ -354,7 +681,7 @@ def fetch_app_icon(url):
     cache = os.path.join(APP_ICON_CACHE, hashlib.sha256(url.encode()).hexdigest() + ".png")
     cached = None
     try:
-        cached = GdkPixbuf.Pixbuf.new_from_file_at_scale(cache, 64, 64, True)
+        cached = GdkPixbuf.Pixbuf.new_from_file_at_scale(cache, px(64), px(64), True)
         if time.time() - os.path.getmtime(cache) < ICON_CACHE_SECONDS:
             return cached
     except (OSError, GLib.Error):
@@ -576,6 +903,26 @@ def native_window_id(win):
     gdk.gdk_win32_window_get_handle.argtypes = [ctypes.c_void_p]
     return gdk.gdk_win32_window_get_handle(ptr)
 
+def qr_pixbuf(text, size=None):
+    """The QR code for text as a black-on-white picture, or None when
+    python3-qrcode is missing. Drawn by hand so no image library is needed."""
+    matrix = remote_server.qr_matrix(text) if remote_server else None
+    if not matrix:
+        return None
+    n = len(matrix)
+    scale = max(1, (size or px(360)) // n)
+    side = n * scale
+    rows = bytearray()
+    for line in matrix:
+        row = bytearray()
+        for dark in line:
+            row += (b"\x00\x00\x00" if dark else b"\xff\xff\xff") * scale
+        rows += bytes(row) * scale
+    return GdkPixbuf.Pixbuf.new_from_bytes(
+        GLib.Bytes.new(bytes(rows)), GdkPixbuf.Colorspace.RGB,
+        False, 8, side, side, side * 3)
+
+
 SEGMENTS = 16          # blocks in the volume bar
 # PipeWire owns the Pi's volume; do not secretly attenuate it again in mpv.
 START_VOLUME = 70 if IS_WINDOWS else 100
@@ -605,9 +952,8 @@ class VolumeOSD(Gtk.Window):
         box.pack_start(self.caption, False, False, 0)
 
         bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        bar.set_margin_start(12)
-        bar.set_margin_end(12)
-        bar.set_margin_bottom(12)
+        scaled(lambda: (bar.set_margin_start(px(12)), bar.set_margin_end(px(12)),
+                        bar.set_margin_bottom(px(12))))
         box.pack_start(bar, False, False, 0)
 
         self.segments = []
@@ -763,7 +1109,7 @@ WEB_KEYBOARD_JS = r"""
 class TVWindow(Gtk.Window):
     # kind of tile -> its icon text; anything else uses the first 3 letters
     # of the app's own name (so a custom app just works with no config).
-    TILE_ICON = {"live": "TV", "store": "+", "settings": "⚙"}
+    TILE_ICON = {"live": "TV", "store": "+", "settings": "⚙", "remote": "RC"}
 
     def __init__(self, playlist_path):
         super().__init__(title="TV")
@@ -808,8 +1154,19 @@ class TVWindow(Gtk.Window):
                 self._prefs = json.load(f)
         except (OSError, ValueError):
             self._prefs = {}
+        self._scale_choice = clean_scale_choice(self._prefs.get("ui_scale", "auto"))
+        set_ui_scale(effective_scale(self._scale_choice, screen_height_now()))
         self._icon_generation = 0
         self._icon_jobs = []
+        self._remote_timer = None
+        self.remote = None
+        if remote_server is not None and not IS_WINDOWS:
+            try:
+                server = remote_server.RemoteServer()
+                if server.start():
+                    self.remote = server
+            except Exception:
+                self.remote = None   # the TV still works without the remote
 
         self.state = load_state()
         # Only resume automatically if a previous run actually left a
@@ -828,9 +1185,19 @@ class TVWindow(Gtk.Window):
         self._build_web()
         self._build_store()
         self._build_settings()
+        self._build_remote()
+        self._apply_saved_sound_output()
+        # Give the desktop a moment to finish its own screen setup first.
+        GLib.timeout_add_seconds(3, self._apply_saved_resolution)
 
         self.connect("key-press-event", self.on_key)
         self.connect("destroy", self.on_destroy)
+        # A new resolution (Settings, start-up restore, another TV) changes
+        # the screen size: rescale everything to match.
+        self._rescale_pending = None
+        screen = self.get_screen()
+        screen.connect("size-changed", lambda *_: self._schedule_rescale())
+        screen.connect("monitors-changed", lambda *_: self._schedule_rescale())
 
         self.populate()
         self.refresh_store_list()
@@ -871,10 +1238,9 @@ class TVWindow(Gtk.Window):
         self.speaker_bar.set_show_text(True)
         self.speaker_bar.set_text("SPEAKER UNAVAILABLE" if not IS_WINDOWS
                                   else "SPEAKER LEVEL UNAVAILABLE ON WINDOWS")
-        self.speaker_bar.set_margin_start(24)
-        self.speaker_bar.set_margin_end(24)
-        self.speaker_bar.set_margin_top(8)
-        self.speaker_bar.set_margin_bottom(12)
+        bar = self.speaker_bar
+        scaled(lambda: (bar.set_margin_start(px(24)), bar.set_margin_end(px(24)),
+                        bar.set_margin_top(px(8)), bar.set_margin_bottom(px(12))))
         self.home_screen.pack_start(self.speaker_bar, False, False, 0)
 
     def _poll_speaker(self):
@@ -923,7 +1289,8 @@ class TVWindow(Gtk.Window):
             [{"kind": "web", "name": "GOAAAL LIVE", "url": "https://appendhub.com/go-wall/app/?match-view"}] +
             [{"kind": "web", "name": a.get("name") or "APP", "url": a["url"]}
              for a in custom if a.get("url")] +
-            [{"kind": "store", "name": "APP STORE", "url": None},
+            [{"kind": "remote", "name": "PHONE REMOTE", "url": None},
+             {"kind": "store", "name": "APP STORE", "url": None},
              {"kind": "settings", "name": "SETTINGS", "url": None}]
         )
         if self.home_index >= len(self.home_apps):
@@ -944,7 +1311,7 @@ class TVWindow(Gtk.Window):
             tile = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
             tile.set_can_focus(True)          # needed for scroll-into-view
             tile.get_style_context().add_class("tile")
-            tile.set_size_request(190, 150)
+            tile.set_size_request(px(190), px(150))
 
             icon_text = self.TILE_ICON.get(app["kind"], app["name"][:3].upper())
             icon = Gtk.Label(label=icon_text)
@@ -1023,10 +1390,21 @@ class TVWindow(Gtk.Window):
             self.screen = "SETTINGS"
             self.apply_screen()
             self.refresh_wifi()
+            self.refresh_sound_outputs()
+            self.refresh_resolutions()
+            self.size_label.set_text(" %s " % scale_choice_label(
+                self._scale_choice, screen_height_now(self)))
+            self._set_settings_row("size")
         elif kind == "store":
             self.refresh_store_list()
             self.screen = "STORE"
             self.apply_screen()
+        elif kind == "remote":
+            self.refresh_remote()
+            self.screen = "REMOTE"
+            self.apply_screen()
+            if self._remote_timer is None:
+                self._remote_timer = GLib.timeout_add_seconds(1, self._remote_tick)
 
     def go_home(self):
         self.screen = "HOME"
@@ -1037,7 +1415,7 @@ class TVWindow(Gtk.Window):
     # ================================================================
     def _build_live(self):
         self.sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.sidebar.set_size_request(460, -1)
+        scaled(lambda: self.sidebar.set_size_request(px(460), -1))
         self.sidebar.get_style_context().add_class("sidebar")
         self.outer.pack_start(self.sidebar, False, False, 0)
 
@@ -1100,10 +1478,9 @@ class TVWindow(Gtk.Window):
         self.keyboard_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 
         grid = Gtk.Grid()
-        grid.set_column_spacing(4)
-        grid.set_row_spacing(4)
+        scaled(lambda: (grid.set_column_spacing(px(4)), grid.set_row_spacing(px(4)),
+                        grid.set_margin_top(px(16))))
         grid.set_halign(Gtk.Align.CENTER)
-        grid.set_margin_top(16)
         self.keyboard_box.pack_start(grid, True, True, 0)
 
         self.osk_widgets = []
@@ -1113,7 +1490,7 @@ class TVWindow(Gtk.Window):
                 key = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
                 key.get_style_context().add_class("key")
                 wide = len(label) > 1
-                key.set_size_request(76 if wide else 38, 38)
+                scaled(lambda k=key, w=wide: k.set_size_request(px(76 if w else 38), px(38)))
                 lab = Gtk.Label(label=label)
                 lab.get_style_context().add_class("key-label")
                 key.pack_start(lab, True, True, 0)
@@ -1167,7 +1544,7 @@ class TVWindow(Gtk.Window):
                 line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
 
                 img = Gtk.Image()
-                img.set_size_request(LOGO_W, LOGO_H)
+                img.set_size_request(px(LOGO_W), px(LOGO_H))
                 img.get_style_context().add_class("logo")
                 line.pack_start(img, False, False, 0)
                 self.logo_slots.append((img, logo))
@@ -1251,7 +1628,7 @@ class TVWindow(Gtk.Window):
     def _set_logo(self, img, path):
         try:
             pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(
-                path, LOGO_W, LOGO_H, True)
+                path, px(LOGO_W), px(LOGO_H), True)
             img.set_from_pixbuf(pb)
         except GLib.Error:
             pass          # unreadable image, leave the slot blank
@@ -1268,6 +1645,21 @@ class TVWindow(Gtk.Window):
         row = self.listbox.get_selected_row()
         if row is not None and row.get_selectable() and row is not self.search_row:
             self.play_selected()
+        return False   # GLib.idle_add: do not call again
+
+    def open_remote_on_start(self):
+        """Runs once at start-up: show PHONE REMOTE (QR code) instead of
+        jumping into live TV. The last channel stays selected in the list
+        but does not autoplay. If the remote could not start, fall back to
+        the old behaviour of resuming live TV."""
+        if self.remote is None:
+            return self.resume_playback()
+        self.resume_pending = False
+        for idx, app in enumerate(self.home_apps):
+            if app["kind"] == "remote":
+                self.select_home_tile(idx)
+                self.launch_app(app)
+                break
         return False   # GLib.idle_add: do not call again
 
     def activate_row(self, row):
@@ -1391,6 +1783,10 @@ class TVWindow(Gtk.Window):
                 self.webview = WEBKIT.WebView()
             settings = self.webview.get_settings()
             settings.set_user_agent(WEB_USER_AGENT)
+            try:
+                self.webview.set_zoom_level(UI_SCALE)   # web apps readable on big TVs
+            except (AttributeError, TypeError):
+                pass
             settings.set_property("enable-webgl", True)
             try:
                 settings.set_property("media-playback-requires-user-gesture", False)
@@ -1540,6 +1936,9 @@ class TVWindow(Gtk.Window):
 
 
     def _back_step(self):
+        if self.screen == "SETTINGS" and self._res_pending is not None:
+            self.revert_resolution()      # BACK = "no, go back to the old one"
+            return
         if self.screen == "HOME":
             return
         if self.screen == "LIVE":
@@ -1580,7 +1979,7 @@ class TVWindow(Gtk.Window):
             return False
         d = Gtk.Dialog(title="RETRO TV KEYBOARD", transient_for=self, modal=True)
         self._typing_dialog = d
-        d.set_default_size(750, 430)
+        d.set_default_size(px(750), px(430))
         body = d.get_content_area()
         preview = Gtk.Entry()
         preview.set_visibility(entry.get_visibility())
@@ -1589,7 +1988,7 @@ class TVWindow(Gtk.Window):
         body.pack_start(preview, False, False, 6)
         layout = [list("1234567890"),list("qwertyuiop"),list("asdfghjkl"),
                   list("zxcvbnm@./"),["SHIFT","SPACE","-","_",":","DEL","CLEAR","DONE"]]
-        grid = Gtk.Grid(column_spacing=4,row_spacing=4)
+        grid = Gtk.Grid(column_spacing=px(4),row_spacing=px(4))
         grid.set_halign(Gtk.Align.CENTER)
         body.pack_start(grid,True,True,6)
         widgets, pos, shift = [], [1,0], [False]
@@ -1627,7 +2026,7 @@ class TVWindow(Gtk.Window):
             widgets.append([])
             for ci,key_name in enumerate(row):
                 button = Gtk.Button(label=key_name)
-                button.set_size_request(45 if len(key_name)==1 else 74,40)
+                button.set_size_request(px(45 if len(key_name)==1 else 74),px(40))
                 button.connect("clicked", lambda _b, v=key_name: press(v))
                 grid.attach(button,ci,ri,1,1)
                 widgets[-1].append(button)
@@ -1673,11 +2072,74 @@ class TVWindow(Gtk.Window):
 
     def _build_settings(self):
         self.settings_screen = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=8)
-        self.settings_screen.set_border_width(24)
+        scaled(lambda: (self.settings_screen.set_spacing(px(8)),
+                        self.settings_screen.set_border_width(px(24))))
         self.outer.pack_start(self.settings_screen,True,True,0)
         header=Gtk.Label(label=" SETTINGS / WI-FI ",xalign=0)
         header.get_style_context().add_class("brand")
         self.settings_screen.pack_start(header,False,False,0)
+        size_row=Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,spacing=10)
+        size_row.get_style_context().add_class("settings-row")
+        self.size_row=size_row
+        size_row.pack_start(Gtk.Label(label="SCREEN SIZE  (LEFT / RIGHT):",xalign=0),False,False,0)
+        size_prev=Gtk.Button(label="◀")
+        size_prev.set_can_focus(False)
+        size_prev.connect("clicked",lambda *_:self.cycle_screen_size(-1))
+        size_row.pack_start(size_prev,False,False,0)
+        self.size_label=Gtk.Label(label=" %s "%scale_choice_label(self._scale_choice,screen_height_now()),xalign=0.5)
+        self.size_label.get_style_context().add_class("sound-value")
+        size_row.pack_start(self.size_label,False,False,0)
+        size_next=Gtk.Button(label="▶")
+        size_next.set_can_focus(False)
+        size_next.connect("clicked",lambda *_:self.cycle_screen_size(1))
+        size_row.pack_start(size_next,False,False,0)
+        self.settings_screen.pack_start(size_row,False,False,0)
+
+        sound_row=Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,spacing=10)
+        sound_row.get_style_context().add_class("settings-row")
+        self.sound_row=sound_row
+        sound_row.pack_start(Gtk.Label(label="SOUND OUTPUT  (LEFT / RIGHT):",xalign=0),False,False,0)
+        prev_btn=Gtk.Button(label="◀")
+        prev_btn.set_can_focus(False)
+        prev_btn.connect("clicked",lambda *_:self.cycle_sound_output(-1))
+        sound_row.pack_start(prev_btn,False,False,0)
+        self.sound_label=Gtk.Label(label="CHECKING...",xalign=0.5)
+        self.sound_label.get_style_context().add_class("sound-value")
+        sound_row.pack_start(self.sound_label,False,False,0)
+        next_btn=Gtk.Button(label="▶")
+        next_btn.set_can_focus(False)
+        next_btn.connect("clicked",lambda *_:self.cycle_sound_output(1))
+        sound_row.pack_start(next_btn,False,False,0)
+        self.settings_screen.pack_start(sound_row,False,False,0)
+        self._sinks=[]
+        self._sound_busy=False
+
+        res_row=Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,spacing=10)
+        res_row.get_style_context().add_class("settings-row")
+        self.res_row=res_row
+        res_row.pack_start(Gtk.Label(label="RESOLUTION  (LEFT / RIGHT):",xalign=0),False,False,0)
+        res_prev=Gtk.Button(label="◀")
+        res_prev.set_can_focus(False)
+        res_prev.connect("clicked",lambda *_:self.cycle_resolution(-1))
+        res_row.pack_start(res_prev,False,False,0)
+        self.res_label=Gtk.Label(label="CHECKING...",xalign=0.5)
+        self.res_label.get_style_context().add_class("sound-value")
+        res_row.pack_start(self.res_label,False,False,0)
+        res_next=Gtk.Button(label="▶")
+        res_next.set_can_focus(False)
+        res_next.connect("clicked",lambda *_:self.cycle_resolution(1))
+        res_row.pack_start(res_next,False,False,0)
+        self.res_keep=Gtk.Button(label="KEEP")
+        self.res_keep.set_can_focus(False)
+        self.res_keep.set_no_show_all(True)
+        self.res_keep.connect("clicked",lambda *_:self.keep_resolution())
+        res_row.pack_start(self.res_keep,False,False,0)
+        self.settings_screen.pack_start(res_row,False,False,0)
+        self._res_output=None
+        self._res_modes=[]
+        self._res_busy=False
+        self._res_pending=None
+        self._settings_row="sound"
         self.settings_screen.pack_start(Gtk.Label(label="ESC / BACK BEHAVIOR",xalign=0),False,False,0)
         combo=Gtk.ComboBoxText()
         combo.append("step","BACK ONE STEP")
@@ -1704,6 +2166,99 @@ class TVWindow(Gtk.Window):
         self._osk_entry(self.wifi_password,"WI-FI PASSWORD")
         self._networks=[]
 
+    # ================================================================
+    #  REMOTE - QR code so a phone on the same Wi-Fi becomes a remote
+    # ================================================================
+    def _build_remote(self):
+        self.remote_screen = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.outer.pack_start(self.remote_screen, True, True, 0)
+        header = Gtk.Label(label=" PHONE REMOTE ", xalign=0)
+        header.get_style_context().add_class("brand")
+        self.remote_screen.pack_start(header, False, False, 0)
+
+        body = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=40)
+        scaled(lambda: body.set_spacing(px(40)))
+        body.set_halign(Gtk.Align.CENTER)
+        body.set_valign(Gtk.Align.CENTER)
+        self.remote_screen.pack_start(body, True, True, 0)
+
+        frame = Gtk.Box()
+        frame.get_style_context().add_class("qr-frame")
+        frame.set_valign(Gtk.Align.CENTER)
+        self.remote_qr = Gtk.Image()
+        frame.pack_start(self.remote_qr, False, False, 0)
+        body.pack_start(frame, False, False, 0)
+
+        info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        scaled(lambda: info.set_spacing(px(14)))
+        info.set_valign(Gtk.Align.CENTER)
+        body.pack_start(info, False, False, 0)
+        self.remote_steps = Gtk.Label(
+            label="1. CONNECT YOUR PHONE TO THIS WI-FI\n"
+                  "2. SCAN THE QR CODE WITH THE CAMERA\n"
+                  "3. OR OPEN THE ADDRESS AND TYPE THE CODE", xalign=0)
+        self.remote_steps.get_style_context().add_class("remote-info")
+        info.pack_start(self.remote_steps, False, False, 0)
+        self.remote_url = Gtk.Label(label="", xalign=0, selectable=False)
+        self.remote_url.get_style_context().add_class("remote-info")
+        info.pack_start(self.remote_url, False, False, 0)
+        self.remote_code = Gtk.Label(label="------")
+        self.remote_code.get_style_context().add_class("remote-code")
+        self.remote_code.set_halign(Gtk.Align.START)
+        info.pack_start(self.remote_code, False, False, 0)
+        self.remote_status = Gtk.Label(label="", xalign=0)
+        self.remote_status.set_line_wrap(True)
+        self.remote_status.set_max_width_chars(42)
+        self.remote_status.get_style_context().add_class("remote-info")
+        info.pack_start(self.remote_status, False, False, 0)
+
+        hint = Gtk.Label(label=" SAME WI-FI ONLY   BACK TO RETURN ", xalign=0)
+        hint.get_style_context().add_class("hint")
+        self.remote_screen.pack_start(hint, False, False, 0)
+
+    def refresh_remote(self):
+        """Redraws the QR code - the Pi's address can change after Wi-Fi changes."""
+        if self.remote is None:
+            self.remote_qr.clear()
+            self.remote_url.set_text("")
+            self.remote_code.set_text("------")
+            self.remote_status.set_text(
+                "PHONE REMOTE IS NOT RUNNING.\n"
+                "PUT remote_server.py AND remote_page.html NEXT TO tv.py\n"
+                "(bash install_remote.sh) AND RESTART THE TV.")
+            return
+        link = self.remote.qr_link()
+        pixbuf = qr_pixbuf(link)
+        if pixbuf is None:
+            self.remote_qr.clear()
+        else:
+            self.remote_qr.set_from_pixbuf(pixbuf)
+        self.remote_url.set_text("ADDRESS:  " + self.remote.url())
+        self.remote_code.set_text(self.remote.pairing.code)
+        self._remote_status()
+
+    def _remote_status(self):
+        if self.remote_code.get_text() != self.remote.pairing.code:
+            # Too many wrong guesses made a new code: redraw the QR to match.
+            self.refresh_remote()
+            return
+        lines = ["PAIRED PHONES: %d" % self.remote.pairing.count()]
+        if "127.0.0.1" in self.remote_url.get_text():
+            lines.append("NOT ON WI-FI: CONNECT THE TV TO WI-FI FIRST")
+        if self.remote_qr.get_pixbuf() is None:
+            lines.append("NO QR PICTURE: sudo apt install python3-qrcode")
+        if not getattr(self.remote.input, "available", False):
+            lines.append("KEYS/MOUSE OFF: run install_remote.sh, then reboot")
+        self.remote_status.set_text("\n".join(lines))
+
+    def _remote_tick(self):
+        """Once a second while the REMOTE screen is open; stops itself after."""
+        if self._closed or self.screen != "REMOTE" or self.remote is None:
+            self._remote_timer = None
+            return False
+        self._remote_status()
+        return True
+
     def _back_policy(self,combo):
         self._prefs["back_behavior"]=combo.get_active_id()
         try:
@@ -1712,6 +2267,272 @@ class TVWindow(Gtk.Window):
                 json.dump(self._prefs,f,indent=2)
         except OSError as exc:
             self.wifi_status.set_text(str(exc))
+
+    # ---------------- SOUND OUTPUT ----------------
+    def _save_prefs(self):
+        try:
+            os.makedirs(os.path.dirname(self._prefs_path), exist_ok=True)
+            with open(self._prefs_path, "w", encoding="utf-8") as f:
+                json.dump(self._prefs, f, indent=2)
+        except OSError:
+            pass
+
+    def _sound_job(self, work, done=None):
+        """Runs wpctl off the screen thread, then shows the result."""
+        if self._sound_busy or self._closed:
+            return
+        self._sound_busy = True
+        def run():
+            try:
+                work()
+                sinks = list_sinks()
+            except Exception:
+                sinks = []
+            GLib.idle_add(self._show_sinks, sinks, done)
+        threading.Thread(target=run, daemon=True).start()
+
+    def _show_sinks(self, sinks, done=None):
+        self._sound_busy = False
+        if self._closed:
+            return False
+        self._sinks = sinks
+        current = next((x for x in sinks if x["default"]), None)
+        if IS_WINDOWS:
+            self.sound_label.set_text(" NOT AVAILABLE ON WINDOWS ")
+        elif current is None:
+            self.sound_label.set_text(" NO SOUND OUTPUT FOUND ")
+        else:
+            self.sound_label.set_text(" %s " % sink_label(current["name"]))
+        if done:
+            done(current)
+        return False
+
+    def refresh_sound_outputs(self):
+        self._sound_job(lambda: None)
+
+    def cycle_sound_output(self, delta):
+        target = next_sink(self._sinks, delta)
+        if target is None or len(self._sinks) < 2:
+            self.refresh_sound_outputs()
+            return
+        def remember(current):
+            if current is not None:
+                self._prefs["sound_output"] = current["name"]
+                self._save_prefs()
+        self._sound_job(lambda: set_default_sink(target["id"]), remember)
+
+    def _apply_saved_sound_output(self):
+        """At start-up: switch back to the output chosen last time, if present."""
+        saved = self._prefs.get("sound_output")
+        if not saved or IS_WINDOWS:
+            return
+        def work():
+            target = saved_sink_to_apply(list_sinks(), saved)
+            if target is not None:
+                set_default_sink(target)
+        self._sound_job(work)
+
+    # ---------------- SETTINGS ROW CURSOR ----------------
+    def _set_settings_row(self, row):
+        """size / sound / resolution / wifi - which row LEFT/RIGHT and OK act on."""
+        self._settings_row = row
+        for name, box in (("size", self.size_row), ("sound", self.sound_row),
+                          ("resolution", self.res_row)):
+            ctx = box.get_style_context()
+            if name == row:
+                ctx.add_class("settings-row-active")
+            else:
+                ctx.remove_class("settings-row-active")
+        if row == "wifi":
+            if self.wifi_list.get_selected_row() is None:
+                first = self.wifi_list.get_row_at_index(0)
+                if first is not None:
+                    self.wifi_list.select_row(first)
+            target = self.wifi_list.get_selected_row()
+            (target or self.wifi_list).grab_focus()
+        else:
+            self.grab_focus()
+
+    # ---------------- SCREEN SIZE ----------------
+    def cycle_screen_size(self, delta):
+        self._scale_choice = next_scale_choice(self._scale_choice, delta)
+        self._prefs["ui_scale"] = self._scale_choice
+        self._save_prefs()
+        height = screen_height_now(self)
+        self.size_label.set_text(" %s " % scale_choice_label(self._scale_choice, height))
+        self.apply_ui_scale(effective_scale(self._scale_choice, height))
+
+    # ---------------- RESOLUTION ----------------
+    def _res_job(self, work, done):
+        if self._res_busy or self._closed:
+            return
+        self._res_busy = True
+        def run():
+            try:
+                result = work()
+            except Exception:
+                result = None
+            try:
+                output = main_output(list_outputs())
+            except Exception:
+                output = None
+            GLib.idle_add(done, result, output)
+        threading.Thread(target=run, daemon=True).start()
+
+    def _show_resolution(self, output):
+        self._res_output = output
+        self._res_modes = screen_modes(output) if output else []
+        current = next((m for m in self._res_modes if m["current"]), None)
+        if self._res_pending:
+            return
+        if IS_WINDOWS:
+            self.res_label.set_text(" NOT AVAILABLE ON WINDOWS ")
+        elif output is None:
+            self.res_label.set_text(" NOT AVAILABLE (NEEDS wlr-randr) ")
+        elif current is None:
+            self.res_label.set_text(" UNKNOWN ")
+        else:
+            self.res_label.set_text(" %s " % mode_label(current))
+
+    def refresh_resolutions(self):
+        def done(_result, output):
+            self._res_busy = False
+            if not self._closed:
+                self._show_resolution(output)
+            return False
+        self._res_job(lambda: None, done)
+
+    def cycle_resolution(self, delta):
+        if self._res_pending or self._res_busy:
+            return
+        modes = self._res_modes
+        current = next((i for i, m in enumerate(modes) if m["current"]), None)
+        if not modes or current is None or len(modes) < 2 or self._res_output is None:
+            self.refresh_resolutions()
+            return
+        previous = modes[current]
+        target = modes[(current + delta) % len(modes)]
+        name = self._res_output["name"]
+        def done(ok, output):
+            self._res_busy = False
+            if self._closed:
+                return False
+            if not ok:
+                self._show_resolution(output)
+                self.res_label.set_text(" COULD NOT SET %s " % mode_label(target))
+                return False
+            self._res_pending = {"output": name, "previous": previous,
+                                 "target": target, "left": RES_CONFIRM_SECONDS}
+            self._show_resolution(output)
+            self._refit_window()
+            self.res_keep.show()
+            self._res_countdown_label()
+            self._res_pending["timer"] = GLib.timeout_add_seconds(1, self._res_tick)
+            return False
+        self._res_job(lambda: set_mode(name, target), done)
+
+    def _res_countdown_label(self):
+        p = self._res_pending
+        self.res_label.set_text(" %s - KEEP? PRESS OK (%d) " % (mode_label(p["target"]), p["left"]))
+
+    def _res_tick(self):
+        p = self._res_pending
+        if p is None or self._closed:
+            return False
+        p["left"] -= 1
+        if p["left"] <= 0:
+            p["timer"] = None
+            self.revert_resolution()
+            return False
+        self._res_countdown_label()
+        return True
+
+    def keep_resolution(self):
+        p = self._res_pending
+        if p is None:
+            return
+        if p.get("timer"):
+            GLib.source_remove(p["timer"])
+        self._res_pending = None
+        self.res_keep.hide()
+        t = p["target"]
+        self._prefs["resolution"] = {"output": p["output"], "w": t["w"], "h": t["h"],
+                                     "refresh": t["refresh"]}
+        self._save_prefs()
+        self.res_label.set_text(" %s " % mode_label(t))
+
+    def revert_resolution(self):
+        p = self._res_pending
+        if p is None:
+            return
+        if p.get("timer"):
+            GLib.source_remove(p["timer"])
+        self._res_pending = None
+        self.res_keep.hide()
+        def done(_ok, output):
+            self._res_busy = False
+            if not self._closed:
+                self._show_resolution(output)
+                self._refit_window()
+            return False
+        self._res_busy = False
+        self._res_job(lambda: set_mode(p["output"], p["previous"]), done)
+
+    def _refit_window(self):
+        """After the screen size changes, make the TV fill the new screen
+        and resize its text/tiles to match (signals may arrive late or not
+        at all through XWayland, so check again ourselves)."""
+        if self.window_full:
+            GLib.timeout_add(700, lambda: (self.fullscreen(), False)[1])
+        for delay in (800, 2000):
+            GLib.timeout_add(delay, lambda: (self._schedule_rescale(), False)[1])
+
+    def _schedule_rescale(self):
+        if self._rescale_pending is None and not self._closed:
+            self._rescale_pending = GLib.timeout_add(300, self._rescale_now)
+
+    def _rescale_now(self):
+        self._rescale_pending = None
+        if self._closed:
+            return False
+        factor = effective_scale(self._scale_choice, screen_height_now(self))
+        if hasattr(self, "size_label"):
+            self.size_label.set_text(" %s " % scale_choice_label(
+                self._scale_choice, screen_height_now(self)))
+        if factor != UI_SCALE:
+            self.apply_ui_scale(factor)
+        return False
+
+    def apply_ui_scale(self, factor):
+        set_ui_scale(factor)
+        self._build_home_tiles()
+        if self.webview is not None:
+            try:
+                self.webview.set_zoom_level(factor)
+            except (AttributeError, TypeError):
+                pass
+        if self.screen == "REMOTE":
+            self.refresh_remote()
+        if self.window_full:
+            self.fullscreen()
+
+    def _apply_saved_resolution(self):
+        """At start-up: restore the resolution kept last time, if still offered."""
+        saved = self._prefs.get("resolution")
+        if not saved or IS_WINDOWS:
+            return False
+        def work():
+            target = saved_mode_to_apply(main_output(list_outputs()), saved)
+            return set_mode(saved["output"], target) if target else False
+        def done(changed, output):
+            self._res_busy = False
+            if not self._closed:
+                self._show_resolution(output)
+                if changed:
+                    self._refit_window()
+            return False
+        self._res_job(work, done)
+        return False
 
     def _wifi_job(self,args,callback):
         def work():
@@ -1901,6 +2722,7 @@ class TVWindow(Gtk.Window):
         self.web_box.set_visible(s == "WEB")
         self.store_screen.set_visible(s == "STORE")
         self.settings_screen.set_visible(s == "SETTINGS")
+        self.remote_screen.set_visible(s == "REMOTE")
 
         if s == "HOME" and self.home_tiles:
             self.home_tiles[self.home_index].grab_focus()
@@ -1911,6 +2733,8 @@ class TVWindow(Gtk.Window):
             self.store_add_button.grab_focus()
         elif s == "SETTINGS":
             self.wifi_list.grab_focus()
+        elif s == "REMOTE":
+            self.grab_focus()
         elif s == "LIVE" and not self.video_full:
             row = self.listbox.get_selected_row()
             if row:
@@ -1961,11 +2785,43 @@ class TVWindow(Gtk.Window):
             return False
 
         if self.screen == "SETTINGS":
-            if key in (Gdk.KEY_Up, Gdk.KEY_Down):
-                self._move_listbox(self.wifi_list, 1 if key == Gdk.KEY_Down else -1)
+            if self._res_pending is not None:
+                # A new resolution is waiting: OK keeps it, anything else waits.
+                if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+                    self.keep_resolution()
+                return True
+            if isinstance(self.get_focus(), Gtk.Entry):
+                return False
+            row = self._settings_row
+            rows = ["size", "sound", "resolution", "wifi"]
+            if key in (Gdk.KEY_Left, Gdk.KEY_Right):
+                step = 1 if key == Gdk.KEY_Right else -1
+                if row == "size":
+                    self.cycle_screen_size(step)
+                elif row == "sound":
+                    self.cycle_sound_output(step)
+                elif row == "resolution":
+                    self.cycle_resolution(step)
+                return True
+            if key == Gdk.KEY_Down:
+                if row == "wifi":
+                    self._move_listbox(self.wifi_list, 1)
+                else:
+                    self._set_settings_row(rows[rows.index(row) + 1])
+                return True
+            if key == Gdk.KEY_Up:
+                if row in ("sound", "resolution"):
+                    self._set_settings_row(rows[rows.index(row) - 1])
+                elif row == "wifi":
+                    selected = self.wifi_list.get_selected_row()
+                    if selected is None or selected.get_index() == 0:
+                        self._set_settings_row("resolution")
+                    else:
+                        self._move_listbox(self.wifi_list, -1)
                 return True
             if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
-                self._wifi_connect()
+                if row == "wifi":
+                    self._wifi_connect()
                 return True
             if key in (Gdk.KEY_r, Gdk.KEY_R):
                 self.refresh_wifi()
@@ -2072,6 +2928,8 @@ class TVWindow(Gtk.Window):
         self._closed = True
         if self._volume_timer is not None:
             GLib.source_remove(self._volume_timer)
+        if self.remote is not None:
+            self.remote.stop()
         self._audio_workers.shutdown(wait=False, cancel_futures=True)
         self._icon_workers.shutdown(wait=False, cancel_futures=True)
         self._wifi_workers.shutdown(wait=False, cancel_futures=True)
@@ -2093,17 +2951,18 @@ def main():
         print("  From SSH:       DISPLAY=:0 python3 tv.py")
         sys.exit(1)
 
-    provider = Gtk.CssProvider()
-    provider.load_from_data(CSS)
+    global _CSS_PROVIDER
+    _CSS_PROVIDER = Gtk.CssProvider()
     Gtk.StyleContext.add_provider_for_screen(
-        screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        screen, _CSS_PROVIDER, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    set_ui_scale(ui_scale_for(screen_height_now()))   # 720p=1x, 1080p=1.5x, 4K=3x
 
     win = TVWindow(path)
     win.show_all()
     win.apply_screen()    # shows Home, hides everything else, to start with
     win.grab_focus()
     play_chime()
-    GLib.idle_add(win.resume_playback)
+    GLib.idle_add(win.open_remote_on_start)
     Gtk.main()
 
 

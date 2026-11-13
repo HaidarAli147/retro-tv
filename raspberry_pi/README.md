@@ -178,3 +178,79 @@ Retro TV's **GOAAAL LIVE** home tile opens `https://appendhub.com/go-wall/app/?m
 3. On the Goaaal controller, choose **📺 Send live match** under the camera you want on Retro TV. You can change cameras without leaving the viewer.
 
 The Pi needs network access and a WebRTC-capable browser engine. The embedded WebKitGTK view may lack suitable codecs or WebRTC support on some Raspberry Pi OS images. If it fails, use Chromium on the Pi to open the same viewer link; this path is not a guaranteed hardware-accelerated mpv stream. The Goaaal website and Retro TV additions must both be deployed to use the new feature.
+
+## Phone remote (test branch `feature/phone-remote`, not on main)
+
+A **PHONE REMOTE** tile on the Home screen shows a QR code, the Pi's address
+and a 6-digit code. Any phone **on the same Wi-Fi** that scans it gets a remote:
+D-pad, OK, Back, volume/mute, a text box that types on the TV (Wi-Fi passwords,
+URLs) and a touchpad with left/right click and scroll. There is no power button
+on the phone on purpose.
+
+**At start-up the TV now opens the PHONE REMOTE screen** instead of resuming
+live TV. The last channel stays highlighted in LIVE TV but does not autoplay.
+If the remote cannot start (files missing, no free port), the TV falls back to
+the old behaviour and resumes live TV.
+
+Files: `remote_server.py` (small web server started by `tv.py`, runs as your
+user, never root) and `remote_page.html` (the phone page). It makes its own
+virtual keyboard and mouse, so it **does not use or change `rpi_bridge.py`**;
+the joystick keeps working alongside it.
+
+Install (from the folder with these files, as your normal user):
+
+    bash install_remote.sh
+    sudo reboot
+
+The installer backs up `~/tv.py` to `~/tv.py.before-phone-remote`, installs
+`python3-qrcode`, copies the three files to your home folder and adds
+`/etc/udev/rules.d/60-retro-tv-uinput.rules` (lets only the user logged in at
+the Pi's screen create a virtual keyboard/mouse - no group changes). It does not touch the Arduino bridge, the shutdown
+button service, the playlist or the chime. **Do not run `setup.sh` for this**:
+it would replace the bridge in `/opt/rpi-bridge`.
+
+Undo:
+
+    bash uninstall_remote.sh
+
+Checks: `python3 -m unittest tests.test_remote_server -v` (no display needed).
+Typing is English letters, numbers and symbols only, and assumes a US
+keyboard layout on the Pi (check: `cat /etc/default/keyboard`; with a UK
+layout, `@ " # ~ \ |` would come out wrong). Too many wrong codes from
+different phones makes a new code (the TV redraws the QR); paired phones
+keep working. The REMOTE screen says
+"KEYS/MOUSE OFF" if the uinput permission is missing; volume still works then.
+
+## Sound output (Settings)
+
+Settings now has **SOUND OUTPUT** at the top. Press **LEFT / RIGHT** (joystick,
+keyboard or the phone remote) or click ◀ ▶ to switch between the outputs the Pi
+has: speaker (3.5 mm jack), TV / monitor (HDMI), or any USB / Bluetooth speaker.
+It changes PipeWire's default output (`wpctl set-default`), so live TV, the
+chime, web apps and the volume knob all follow it. The choice is saved in
+`~/.config/retro-tv/preferences.json` and applied again at start-up if that
+output is present. Note: the Pi 4's headphone jack cannot detect whether
+speakers are plugged in, so this is a manual choice.
+
+## Resolution (Settings)
+
+Settings has **RESOLUTION** under SOUND OUTPUT. In Settings, **UP / DOWN** move
+the yellow box between SOUND OUTPUT, RESOLUTION and the Wi-Fi list; **LEFT /
+RIGHT** change the highlighted setting. RESOLUTION lists only the modes your
+monitor reports (via `wlr-randr`, installed by `install_remote.sh`). After a
+change the TV shows **KEEP? PRESS OK (15)**: press OK (or click KEEP) to keep
+it; BACK or waiting 15 seconds goes back to the old resolution, so a mode the
+monitor can't show never leaves you with a black screen. The kept choice is
+saved in `~/.config/retro-tv/preferences.json` and restored 3 seconds after the
+TV app starts. Lower resolutions make everything bigger but slightly softer.
+
+## Screen size (Settings)
+
+The TV app now **sizes itself to the screen**. It was designed for 720p, so
+by default (**SCREEN SIZE: AUTO**) it scales everything by screen height ÷ 720:
+1080p = 150%, 4K = 300%. The top row of Settings, **SCREEN SIZE**, lets you
+pick AUTO or a fixed 50% – 400% with LEFT / RIGHT; it changes instantly and is
+saved in `~/.config/retro-tv/preferences.json` (`"ui_scale"`). Text, tiles,
+lists, keyboards, the QR code, logos and web-app zoom all follow it, and it
+re-fits automatically when the screen resolution changes. SCREEN SIZE keeps
+the picture sharp; RESOLUTION (below it) changes the real HDMI mode.
