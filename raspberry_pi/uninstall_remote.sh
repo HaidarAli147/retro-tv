@@ -16,10 +16,9 @@ else
 fi
 
 rm -f "$HOME/remote_server.py" "$HOME/remote_page.html"
-sudo rm -f /etc/udev/rules.d/99-retro-tv-uinput.rules
+sudo rm -f /etc/udev/rules.d/60-retro-tv-uinput.rules
 sudo udevadm control --reload-rules
+sudo udevadm trigger --name-match=uinput || true
 
 echo
-echo "Removed. Your user is still in the 'input' group; to remove that too:"
-echo "    sudo gpasswd -d $USER input"
-echo "Log out and back in (or reboot) to finish."
+echo "Removed. Reboot to finish:  sudo reboot"

@@ -1843,7 +1843,13 @@ class TVWindow(Gtk.Window):
         self._remote_status()
 
     def _remote_status(self):
+        if self.remote_code.get_text() != self.remote.pairing.code:
+            # Too many wrong guesses made a new code: redraw the QR to match.
+            self.refresh_remote()
+            return
         lines = ["PAIRED PHONES: %d" % self.remote.pairing.count()]
+        if "127.0.0.1" in self.remote_url.get_text():
+            lines.append("NOT ON WI-FI: CONNECT THE TV TO WI-FI FIRST")
         if self.remote_qr.get_pixbuf() is None:
             lines.append("NO QR PICTURE: sudo apt install python3-qrcode")
         if not getattr(self.remote.input, "available", False):

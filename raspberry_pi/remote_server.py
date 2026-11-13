@@ -14,7 +14,8 @@ Safety rules:
     - Runs as the normal desktop user, never root.
     - Only answers phones with a local-network address (192.168.x.x etc.).
     - The code changes every time tv.py starts; 5 wrong codes per minute
-      from one phone locks that phone out for the rest of the minute.
+      from one phone locks that phone out for the rest of the minute, and
+      20 wrong codes from any phones in a minute makes a brand-new code.
     - No power/shutdown command exists here on purpose.
     - Does not use or change rpi_bridge.py: it makes its own virtual
       keyboard and mouse, so the Arduino controls keep working alongside.
@@ -39,6 +40,8 @@ MAX_TEXT = 200
 MAX_DELTA = 200
 WRONG_LIMIT = 5          # wrong codes allowed per phone ...
 WRONG_WINDOW = 60.0      # ... in this many seconds
+GLOBAL_WRONG_LIMIT = 20  # wrong codes from ALL phones per window -> new code
+HANDLER_TIMEOUT = 10     # seconds a phone connection may sit idle
 MAX_TOKENS = 20
 
 # Button name on the phone -> evdev key name (same keys as the Arduino bridge).
@@ -79,11 +82,16 @@ class Pairing:
     """Holds the 6-digit code and the tokens of phones that entered it."""
 
     def __init__(self, code=None, clock=time.monotonic):
-        self.code = code or "%06d" % secrets.randbelow(1_000_000)
+        self.code = code or self._new_code()
         self._clock = clock
         self._tokens = []          # oldest first
         self._wrong = {}           # ip -> [times of wrong attempts]
+        self._all_wrong = []       # times of wrong attempts from anyone
         self._lock = threading.Lock()
+
+    @staticmethod
+    def _new_code():
+        return "%06d" % secrets.randbelow(1_000_000)
 
     def pair(self, ip, code):
         """Returns a new token for the right code, None for a wrong one."""
@@ -93,8 +101,16 @@ class Pairing:
             self._wrong[ip] = recent
             if len(recent) >= WRONG_LIMIT:
                 raise RateLimited()
-            if not secrets.compare_digest(str(code), self.code):
+            if not _same(code, self.code):
                 recent.append(now)
+                self._all_wrong = [t for t in self._all_wrong if now - t < WRONG_WINDOW]
+                self._all_wrong.append(now)
+                if len(self._all_wrong) >= GLOBAL_WRONG_LIMIT:
+                    # Someone is guessing from many addresses: start over with
+                    # a new code. Phones already paired keep their tokens.
+                    self.code = self._new_code()
+                    self._all_wrong = []
+                    log.warning("phone remote: too many wrong codes, new code made")
                 return None
             token = secrets.token_urlsafe(24)
             self._tokens.append(token)
@@ -105,11 +121,36 @@ class Pairing:
         if not token:
             return False
         with self._lock:
-            return any(secrets.compare_digest(token, t) for t in self._tokens)
+            return any(_same(token, t) for t in self._tokens)
 
     def count(self):
         with self._lock:
             return len(self._tokens)
+
+
+def _same(given, expected):
+    """Constant-time compare that never crashes on odd (non-ASCII) input."""
+    given = str(given).encode("utf-8", "replace")
+    return secrets.compare_digest(given, expected.encode())
+
+
+def is_local_host_header(host):
+    """Blocks DNS-rebinding: the address bar must hold an IP or 'localhost',
+    never someone's domain name."""
+    if not host:
+        return True                       # HTTP/1.0 clients may omit it
+    host = host.strip()
+    if host.startswith("["):              # [::1]:8080
+        name = host[1:host.find("]")] if "]" in host else ""
+    else:
+        name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    if name.lower() == "localhost":
+        return True
+    try:
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        return False
 
 
 def is_local_client(ip):
@@ -182,6 +223,13 @@ def text_to_keys(text):
     return keys
 
 
+def declared_key_names():
+    """Only the keys the phone can actually press (no power/sleep keys)."""
+    names = {"KEY_LEFTSHIFT"} | set(KEY_NAMES.values()) | set(_PLAIN.values()) | set(_SHIFTED.values())
+    names |= {"KEY_" + c for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"}
+    return sorted(names)
+
+
 def qr_matrix(text):
     """QR code as rows of True (black) / False, with its white border.
     Returns None when python3-qrcode is not installed."""
@@ -233,6 +281,7 @@ class InputBackend:
         self._lock = threading.Lock()
         self._kbd = self._mouse = self._e = None
         self._tried = False
+        self._ok = False            # read without the lock (screen thread)
 
     def _open(self):
         if self._tried:
@@ -240,14 +289,15 @@ class InputBackend:
         self._tried = True
         try:
             from evdev import UInput, ecodes as e
-            all_keys = list(range(e.KEY_ESC, e.KEY_COMPOSE + 1))
-            self._kbd = UInput({e.EV_KEY: all_keys}, name="retro-tv-phone-keyboard")
+            keys = [getattr(e, name) for name in declared_key_names()]
+            self._kbd = UInput({e.EV_KEY: keys}, name="retro-tv-phone-keyboard")
             self._mouse = UInput(
                 {e.EV_REL: [e.REL_X, e.REL_Y, e.REL_WHEEL],
                  e.EV_KEY: [e.BTN_LEFT, e.BTN_RIGHT]},
                 name="retro-tv-phone-mouse")
             self._e = e
             time.sleep(0.3)          # let udev publish the new devices
+            self._ok = True
             return True
         except Exception as exc:     # ImportError, OSError (permission), ...
             log.warning("phone remote input unavailable: %s", exc)
@@ -256,6 +306,11 @@ class InputBackend:
 
     @property
     def available(self):
+        """Never blocks: safe to call from tv.py's screen every second."""
+        return self._ok
+
+    def ensure(self):
+        """Opens the devices if needed (may take ~0.3 s). Server threads only."""
         with self._lock:
             return self._open()
 
@@ -315,6 +370,7 @@ class InputBackend:
                 except Exception:
                     pass
             self._kbd = self._mouse = None
+            self._ok = False
 
 
 # ----------------------------------------------------------------- server
@@ -346,7 +402,9 @@ class RemoteServer:
         self.port = self._httpd.server_address[1]
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
-        threading.Thread(target=lambda: self.input.available, daemon=True).start()
+        ensure = getattr(self.input, "ensure", None)
+        if ensure is not None:
+            threading.Thread(target=ensure, daemon=True).start()
         return True
 
     def stop(self):
@@ -370,7 +428,8 @@ class RemoteServer:
         kind = cmd[0]
         if kind == "volume":
             return set_volume(cmd[1])
-        if not self.input.available:
+        ensure = getattr(self.input, "ensure", None)
+        if not (ensure() if ensure is not None else self.input.available):
             return False
         if kind == "key":
             self.input.key(cmd[1])
@@ -389,6 +448,7 @@ def _make_handler(remote):
     class Handler(BaseHTTPRequestHandler):
         server_version = "RetroTVRemote/1"
         protocol_version = "HTTP/1.1"
+        timeout = HANDLER_TIMEOUT
 
         def log_message(self, fmt, *args):      # keep the terminal quiet
             log.debug("%s " + fmt, self.client_address[0], *args)
@@ -396,7 +456,12 @@ def _make_handler(remote):
         def _send(self, status, body=b"", ctype="application/json"):
             if isinstance(body, (dict, list)):
                 body = json.dumps(body).encode()
+            if status >= 400:
+                # The request body may be unread: never reuse this connection.
+                self.close_connection = True
             self.send_response(status)
+            if status >= 400:
+                self.send_header("Connection", "close")
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
@@ -411,7 +476,8 @@ def _make_handler(remote):
                 self.close_connection = True
                 self._send(503, {"error": "the TV remote has stopped"})
                 return False
-            if is_local_client(self.client_address[0]):
+            if is_local_client(self.client_address[0]) and \
+                    is_local_host_header(self.headers.get("Host", "")):
                 return True
             self._send(403, {"error": "same Wi-Fi only"})
             return False

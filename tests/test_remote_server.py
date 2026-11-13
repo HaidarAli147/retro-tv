@@ -63,6 +63,21 @@ class PairingTests(unittest.TestCase):
         clock.now += 61
         self.assertTrue(p.pair("192.168.1.5", "123456"))
 
+    def test_many_wrong_codes_from_many_phones_changes_code(self):
+        clock = FakeClock()
+        p = rs.Pairing(code="123456", clock=clock)
+        old = p.pair("192.168.1.2", "123456")
+        for i in range(rs.GLOBAL_WRONG_LIMIT):
+            p.pair("192.168.1.%d" % (10 + i // 4), "000000")
+        self.assertNotEqual(p.code, "123456")            # guessing restarts
+        self.assertIsNone(p.pair("192.168.1.99", "123456"))
+        self.assertTrue(p.valid(old))                    # paired phones keep working
+
+    def test_non_ascii_code_or_token_does_not_crash(self):
+        p = rs.Pairing(code="123456")
+        self.assertIsNone(p.pair("192.168.1.5", "١٢٣٤٥٦"))
+        self.assertFalse(p.valid("tökén"))
+
     def test_tokens_unique_and_counted(self):
         p = rs.Pairing(code="123456")
         a, b = p.pair("10.0.0.2", "123456"), p.pair("10.0.0.3", "123456")
@@ -227,6 +242,29 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(self.req("/api/pair", {"code": self.srv.pairing.code})[0], 403)
             self.assertEqual(self.req("/")[0], 403)
 
+    def test_handler_has_timeout(self):
+        self.assertTrue(0 < rs._make_handler(self.srv).timeout <= 15)
+
+    def test_foreign_host_header_rejected(self):
+        import http.client
+        for host, expected in (("evil.example:8080", 403), ("192.168.1.20:8080", 200),
+                               ("localhost:8080", 200), ("[::1]:8080", 200)):
+            conn = http.client.HTTPConnection("127.0.0.1", self.srv.port, timeout=5)
+            conn.putrequest("GET", "/api/status", skip_host=True)
+            conn.putheader("Host", host)
+            conn.endheaders()
+            self.assertEqual(conn.getresponse().status, expected, host)
+            conn.close()
+
+    def test_error_reply_closes_connection(self):
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.srv.port, timeout=5)
+        conn.request("POST", "/api/cmd", json.dumps({"type": "key", "name": "UP"}),
+                     {"Content-Type": "application/json", "X-Remote-Token": "nope"})
+        resp = conn.getresponse()
+        self.assertEqual(resp.status, 401)
+        self.assertEqual(resp.getheader("Connection"), "close")
+
     def test_page_served_and_self_contained(self):
         status, page = self.req("/")
         self.assertEqual(status, 200)
@@ -240,6 +278,25 @@ class ServerTests(unittest.TestCase):
         link = self.srv.qr_link()
         self.assertTrue(link.endswith("#code=" + self.srv.pairing.code))
         self.assertRegex(link, r"^http://[\d.]+:\d+/#code=\d{6}$")
+
+
+class InputBackendTests(unittest.TestCase):
+    def test_available_never_blocks_or_opens(self):
+        backend = rs.InputBackend()
+        with patch.object(backend, "_open", side_effect=AssertionError("opened")):
+            backend._lock.acquire()          # typing in progress elsewhere
+            try:
+                self.assertFalse(backend.available)
+            finally:
+                backend._lock.release()
+
+    def test_declared_keys_are_only_what_is_used(self):
+        names = rs.declared_key_names()
+        self.assertIn("KEY_A", names)
+        self.assertIn("KEY_LEFTSHIFT", names)
+        self.assertIn("KEY_ESC", names)
+        for banned in ("KEY_POWER", "KEY_SLEEP", "KEY_SUSPEND", "KEY_WAKEUP"):
+            self.assertNotIn(banned, names)
 
 
 class SafetyTests(unittest.TestCase):

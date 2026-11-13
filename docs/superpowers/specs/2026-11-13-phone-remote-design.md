@@ -49,7 +49,10 @@ Wi-Fi as the Pi.
   - Security: pairing code is random per tv.py start; ≤5 wrong codes per IP per
     minute; only private/loopback/link-local client IPs accepted; token required
     for every command (custom header ⇒ cross-site pages can't forge requests);
-    text ≤200 chars; mouse deltas clamped.
+    text ≤200 chars; mouse deltas clamped; 20 wrong codes from any phones in a
+    minute makes a new code (paired phones keep their tokens); Host header must
+    be an IP or localhost (DNS rebinding); 10 s idle timeout; error replies close
+    the connection; the virtual keyboard declares only the keys it can press.
   - Input: its own `evdev.UInput` keyboard+mouse device (same keys as the
     bridge's KEY_MAP). Volume/mute via `wpctl` on the user's own session.
   - If evdev/uinput is unavailable: server still runs, volume still works,
@@ -59,9 +62,17 @@ Wi-Fi as the Pi.
   the phone in request logs; the page pairs automatically from it.
 - tv.py: new tile kind `remote`, new `REMOTE` screen (QR, URL, code, paired
   device count, "SAME WI-FI ONLY · BACK TO RETURN"); server stopped on exit.
-- setup.sh: install `python3-qrcode`, copy the two new files to `$HOME`, add a
-  udev rule giving the `input` group access to `/dev/uinput`, add the user to
-  `input` (takes effect after re-login).
+- Install: separate `install_remote.sh` / `uninstall_remote.sh` (user decision
+  2026-11-13: `setup.sh` must not be used or changed because it overwrites the
+  Pi's locally edited `/opt/rpi-bridge/rpi_bridge.py`). Installs
+  `python3-qrcode`, backs up `~/tv.py`, copies the three files to `$HOME`, adds
+  `/etc/udev/rules.d/60-retro-tv-uinput.rules` with `TAG+="uaccess"` (access for
+  the logged-in desktop user only; no group membership).
+
+## Known limits
+- Typing assumes a US keyboard layout on the Pi.
+- `install_tv.sh` still embeds an older tv.py (already out of date on main);
+  re-running it would remove the remote.
 
 ## Testing
 - Offline unit tests (`tests/test_remote_server.py`): pairing, wrong-code rate

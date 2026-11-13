@@ -7,7 +7,8 @@
 #   1. Backs up your current ~/tv.py to ~/tv.py.before-phone-remote (once)
 #   2. Installs python3-qrcode (draws the QR code)
 #   3. Copies tv.py, remote_server.py and remote_page.html to your home folder
-#   4. Lets your user create a virtual keyboard/mouse (/dev/uinput, group "input")
+#   4. Lets the logged-in desktop user create a virtual keyboard/mouse
+#      (/dev/uinput) - the same kind of rule Steam uses for controllers
 #
 # It does NOT touch the Arduino bridge, its service, the GPIO shutdown
 # service, your playlist or your chime. Undo with: bash uninstall_remote.sh
@@ -39,14 +40,15 @@ cp tv.py remote_server.py remote_page.html "$HOME/"
 chmod +x "$HOME/tv.py"
 
 echo "== 4/4 Allowing the virtual keyboard/mouse =="
-RULE=/etc/udev/rules.d/99-retro-tv-uinput.rules
-echo 'KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' \
+# "uaccess" gives access only to whoever is logged in at the Pi's screen,
+# not to every program in a group. The file name must sort before 73-.
+RULE=/etc/udev/rules.d/60-retro-tv-uinput.rules
+echo 'KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"' \
     | sudo tee "$RULE" >/dev/null
 sudo udevadm control --reload-rules
 sudo udevadm trigger --name-match=uinput || true
-sudo usermod -aG input "$USER"
 
 echo
-echo "Done. Log out and back in (or reboot) so the new group takes effect:"
+echo "Done. Reboot so the TV app restarts with the remote:"
 echo "    sudo reboot"
 echo "Then open PHONE REMOTE on the TV's home screen and scan the QR code."

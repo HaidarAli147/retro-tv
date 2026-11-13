@@ -208,6 +208,7 @@ footer { text-align: center; color: var(--dim); font-size: 11px; letter-spacing:
     const stop = () => { clearTimeout(wait); clearInterval(repeat); btn.classList.remove('pressed'); };
     btn.addEventListener('pointerdown', (ev) => {
       ev.preventDefault();
+      stop();                       // a second finger must not leave a timer running
       btn.classList.add('pressed');
       buzz();
       send(cmd);
@@ -234,11 +235,13 @@ footer { text-align: center; color: var(--dim); font-size: 11px; letter-spacing:
   let last = null, start = null, travelled = 0, accX = 0, accY = 0, moving = false;
   async function flush() {
     if (moving) return;
-    const dx = Math.trunc(accX), dy = Math.trunc(accY);
+    // Send at most 200 px per step; anything beyond is kept for the next one.
+    const dx = Math.max(-200, Math.min(200, Math.trunc(accX)));
+    const dy = Math.max(-200, Math.min(200, Math.trunc(accY)));
     if (!dx && !dy) return;
     accX -= dx; accY -= dy;
     moving = true;
-    await send({ type: 'move', dx: Math.max(-200, Math.min(200, dx)), dy: Math.max(-200, Math.min(200, dy)) });
+    await send({ type: 'move', dx, dy });
     moving = false;
   }
   setInterval(flush, 40);

@@ -199,8 +199,8 @@ Install (from the folder with these files, as your normal user):
 
 The installer backs up `~/tv.py` to `~/tv.py.before-phone-remote`, installs
 `python3-qrcode`, copies the three files to your home folder and adds
-`/etc/udev/rules.d/99-retro-tv-uinput.rules` (lets the `input` group create a
-virtual keyboard/mouse). It does not touch the Arduino bridge, the shutdown
+`/etc/udev/rules.d/60-retro-tv-uinput.rules` (lets only the user logged in at
+the Pi's screen create a virtual keyboard/mouse - no group changes). It does not touch the Arduino bridge, the shutdown
 button service, the playlist or the chime. **Do not run `setup.sh` for this**:
 it would replace the bridge in `/opt/rpi-bridge`.
 
@@ -209,5 +209,9 @@ Undo:
     bash uninstall_remote.sh
 
 Checks: `python3 -m unittest tests.test_remote_server -v` (no display needed).
-Typing is English letters, numbers and symbols only. The REMOTE screen says
+Typing is English letters, numbers and symbols only, and assumes a US
+keyboard layout on the Pi (check: `cat /etc/default/keyboard`; with a UK
+layout, `@ " # ~ \ |` would come out wrong). Too many wrong codes from
+different phones makes a new code (the TV redraws the QR); paired phones
+keep working. The REMOTE screen says
 "KEYS/MOUSE OFF" if the uinput permission is missing; volume still works then.
