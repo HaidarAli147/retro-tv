@@ -5,7 +5,7 @@
 #
 # What it does:
 #   1. Backs up your current ~/tv.py to ~/tv.py.before-phone-remote (once)
-#   2. Installs python3-qrcode (draws the QR code)
+#   2. Installs python3-qrcode (QR code) and wlr-randr (RESOLUTION setting)
 #   3. Copies tv.py, remote_server.py and remote_page.html to your home folder
 #   4. Lets the logged-in desktop user create a virtual keyboard/mouse
 #      (/dev/uinput) - the same kind of rule Steam uses for controllers
@@ -32,8 +32,8 @@ else
     echo "backup already exists (or no tv.py yet) - keeping it"
 fi
 
-echo "== 2/4 Installing python3-qrcode =="
-sudo apt install -y python3-qrcode
+echo "== 2/4 Installing python3-qrcode and wlr-randr =="
+sudo apt install -y python3-qrcode wlr-randr
 
 echo "== 3/4 Copying the remote files =="
 cp tv.py remote_server.py remote_page.html "$HOME/"

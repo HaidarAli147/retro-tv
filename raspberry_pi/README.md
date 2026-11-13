@@ -231,3 +231,15 @@ chime, web apps and the volume knob all follow it. The choice is saved in
 `~/.config/retro-tv/preferences.json` and applied again at start-up if that
 output is present. Note: the Pi 4's headphone jack cannot detect whether
 speakers are plugged in, so this is a manual choice.
+
+## Resolution (Settings)
+
+Settings has **RESOLUTION** under SOUND OUTPUT. In Settings, **UP / DOWN** move
+the yellow box between SOUND OUTPUT, RESOLUTION and the Wi-Fi list; **LEFT /
+RIGHT** change the highlighted setting. RESOLUTION lists only the modes your
+monitor reports (via `wlr-randr`, installed by `install_remote.sh`). After a
+change the TV shows **KEEP? PRESS OK (15)**: press OK (or click KEEP) to keep
+it; BACK or waiting 15 seconds goes back to the old resolution, so a mode the
+monitor can't show never leaves you with a black screen. The kept choice is
+saved in `~/.config/retro-tv/preferences.json` and restored 3 seconds after the
+TV app starts. Lower resolutions make everything bigger but slightly softer.

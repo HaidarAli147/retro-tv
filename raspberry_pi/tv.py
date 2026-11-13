@@ -237,6 +237,12 @@ row:selected .item, row:selected .item-sub { color: #ffff00; }
     padding: 4px 16px;
 }
 
+.settings-row { padding: 4px 8px; }
+.settings-row-active {
+    background-color: #c0c0c0;
+    border: 3px solid #ffff00;
+}
+
 /* ---- phone remote screen ---- */
 .qr-frame {
     background-color: #ffffff;
@@ -402,6 +408,115 @@ def set_default_sink(sink_id):
                        capture_output=True, check=True, timeout=2)
         return True
     except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+
+
+# ---- RESOLUTION (Settings) --------------------------------------------------
+# The Pi's labwc desktop is Wayland; wlr-randr reads and sets the HDMI mode.
+RES_CONFIRM_SECONDS = 15     # a new resolution reverts unless OK is pressed
+
+
+def _mode(w, h, refresh, current=False, preferred=False):
+    return {"w": int(w), "h": int(h), "refresh": float(refresh),
+            "current": bool(current), "preferred": bool(preferred)}
+
+
+def parse_outputs_json(text):
+    """`wlr-randr --json` -> [{"name", "enabled", "modes": [...]}]."""
+    data = json.loads(text)
+    if not isinstance(data, list):
+        raise ValueError("unexpected wlr-randr json")
+    outputs = []
+    for item in data:
+        modes = [_mode(m["width"], m["height"], m.get("refresh", 0),
+                       m.get("current"), m.get("preferred"))
+                 for m in item.get("modes", [])]
+        outputs.append({"name": item["name"], "enabled": bool(item.get("enabled")),
+                        "modes": modes})
+    return outputs
+
+
+def parse_outputs_text(text):
+    """Plain `wlr-randr` output (older versions without --json)."""
+    outputs, current = [], None
+    for line in text.splitlines():
+        if line and not line[0].isspace():
+            current = {"name": line.split()[0], "enabled": False, "modes": []}
+            outputs.append(current)
+            continue
+        if current is None:
+            continue
+        stripped = line.strip()
+        if stripped.startswith("Enabled:"):
+            current["enabled"] = stripped.split(":", 1)[1].strip() == "yes"
+            continue
+        m = re.match(r"^(\d+)x(\d+) px, ([\d.]+) Hz(?: \((.*)\))?$", stripped)
+        if m:
+            flags = m.group(4) or ""
+            current["modes"].append(_mode(m.group(1), m.group(2), m.group(3),
+                                          "current" in flags, "preferred" in flags))
+    return outputs
+
+
+def main_output(outputs):
+    """The screen the TV is on: the first enabled output with modes."""
+    return next((o for o in outputs if o["enabled"] and o["modes"]), None)
+
+
+def screen_modes(output):
+    """One entry per size (the current one, else the fastest), biggest first."""
+    best = {}
+    for m in output["modes"]:
+        key = (m["w"], m["h"])
+        old = best.get(key)
+        if old is None or (m["current"] and not old["current"]) or \
+                (not old["current"] and m["refresh"] > old["refresh"]):
+            best[key] = m
+    return sorted(best.values(), key=lambda m: (m["w"] * m["h"], m["w"]), reverse=True)
+
+
+def mode_label(m):
+    return "%d x %d" % (m["w"], m["h"])
+
+
+def mode_arg(m):
+    return "%dx%d@%.6fHz" % (m["w"], m["h"], m["refresh"])
+
+
+def saved_mode_to_apply(output, saved):
+    """Mode to restore at start-up, or None if missing, not offered or already on."""
+    if not output or not isinstance(saved, dict) or saved.get("output") != output["name"]:
+        return None
+    for m in screen_modes(output):
+        if (m["w"], m["h"]) == (saved.get("w"), saved.get("h")):
+            return None if m["current"] else m
+    return None
+
+
+def list_outputs():
+    if IS_WINDOWS:
+        return []
+    for cmd, parse in ((["wlr-randr", "--json"], parse_outputs_json),
+                       (["wlr-randr"], parse_outputs_text)):
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True,
+                                    timeout=5, env=dict(os.environ, LC_ALL="C"))
+            return parse(result.stdout)
+        except FileNotFoundError:
+            return []
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+            continue
+    return []
+
+
+def set_mode(output_name, m):
+    if IS_WINDOWS:
+        return False
+    try:
+        subprocess.run(["wlr-randr", "--output", output_name, "--mode", mode_arg(m)],
+                       capture_output=True, check=True, timeout=8)
+        return True
+    except (OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError):
         return False
 
 
@@ -974,6 +1089,8 @@ class TVWindow(Gtk.Window):
         self._build_settings()
         self._build_remote()
         self._apply_saved_sound_output()
+        # Give the desktop a moment to finish its own screen setup first.
+        GLib.timeout_add_seconds(3, self._apply_saved_resolution)
 
         self.connect("key-press-event", self.on_key)
         self.connect("destroy", self.on_destroy)
@@ -1171,6 +1288,8 @@ class TVWindow(Gtk.Window):
             self.apply_screen()
             self.refresh_wifi()
             self.refresh_sound_outputs()
+            self.refresh_resolutions()
+            self._set_settings_row("sound")
         elif kind == "store":
             self.refresh_store_list()
             self.screen = "STORE"
@@ -1709,6 +1828,9 @@ class TVWindow(Gtk.Window):
 
 
     def _back_step(self):
+        if self.screen == "SETTINGS" and self._res_pending is not None:
+            self.revert_resolution()      # BACK = "no, go back to the old one"
+            return
         if self.screen == "HOME":
             return
         if self.screen == "LIVE":
@@ -1848,6 +1970,8 @@ class TVWindow(Gtk.Window):
         header.get_style_context().add_class("brand")
         self.settings_screen.pack_start(header,False,False,0)
         sound_row=Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,spacing=10)
+        sound_row.get_style_context().add_class("settings-row")
+        self.sound_row=sound_row
         sound_row.pack_start(Gtk.Label(label="SOUND OUTPUT  (LEFT / RIGHT):",xalign=0),False,False,0)
         prev_btn=Gtk.Button(label="◀")
         prev_btn.set_can_focus(False)
@@ -1863,6 +1987,33 @@ class TVWindow(Gtk.Window):
         self.settings_screen.pack_start(sound_row,False,False,0)
         self._sinks=[]
         self._sound_busy=False
+
+        res_row=Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,spacing=10)
+        res_row.get_style_context().add_class("settings-row")
+        self.res_row=res_row
+        res_row.pack_start(Gtk.Label(label="RESOLUTION  (LEFT / RIGHT):",xalign=0),False,False,0)
+        res_prev=Gtk.Button(label="◀")
+        res_prev.set_can_focus(False)
+        res_prev.connect("clicked",lambda *_:self.cycle_resolution(-1))
+        res_row.pack_start(res_prev,False,False,0)
+        self.res_label=Gtk.Label(label="CHECKING...",xalign=0.5)
+        self.res_label.get_style_context().add_class("sound-value")
+        res_row.pack_start(self.res_label,False,False,0)
+        res_next=Gtk.Button(label="▶")
+        res_next.set_can_focus(False)
+        res_next.connect("clicked",lambda *_:self.cycle_resolution(1))
+        res_row.pack_start(res_next,False,False,0)
+        self.res_keep=Gtk.Button(label="KEEP")
+        self.res_keep.set_can_focus(False)
+        self.res_keep.set_no_show_all(True)
+        self.res_keep.connect("clicked",lambda *_:self.keep_resolution())
+        res_row.pack_start(self.res_keep,False,False,0)
+        self.settings_screen.pack_start(res_row,False,False,0)
+        self._res_output=None
+        self._res_modes=[]
+        self._res_busy=False
+        self._res_pending=None
+        self._settings_row="sound"
         self.settings_screen.pack_start(Gtk.Label(label="ESC / BACK BEHAVIOR",xalign=0),False,False,0)
         combo=Gtk.ComboBoxText()
         combo.append("step","BACK ONE STEP")
@@ -2052,6 +2203,165 @@ class TVWindow(Gtk.Window):
             if target is not None:
                 set_default_sink(target)
         self._sound_job(work)
+
+    # ---------------- SETTINGS ROW CURSOR ----------------
+    def _set_settings_row(self, row):
+        """sound / resolution / wifi - which row LEFT/RIGHT and OK act on."""
+        self._settings_row = row
+        for name, box in (("sound", self.sound_row), ("resolution", self.res_row)):
+            ctx = box.get_style_context()
+            if name == row:
+                ctx.add_class("settings-row-active")
+            else:
+                ctx.remove_class("settings-row-active")
+        if row == "wifi":
+            if self.wifi_list.get_selected_row() is None:
+                first = self.wifi_list.get_row_at_index(0)
+                if first is not None:
+                    self.wifi_list.select_row(first)
+            target = self.wifi_list.get_selected_row()
+            (target or self.wifi_list).grab_focus()
+        else:
+            self.grab_focus()
+
+    # ---------------- RESOLUTION ----------------
+    def _res_job(self, work, done):
+        if self._res_busy or self._closed:
+            return
+        self._res_busy = True
+        def run():
+            try:
+                result = work()
+            except Exception:
+                result = None
+            try:
+                output = main_output(list_outputs())
+            except Exception:
+                output = None
+            GLib.idle_add(done, result, output)
+        threading.Thread(target=run, daemon=True).start()
+
+    def _show_resolution(self, output):
+        self._res_output = output
+        self._res_modes = screen_modes(output) if output else []
+        current = next((m for m in self._res_modes if m["current"]), None)
+        if self._res_pending:
+            return
+        if IS_WINDOWS:
+            self.res_label.set_text(" NOT AVAILABLE ON WINDOWS ")
+        elif output is None:
+            self.res_label.set_text(" NOT AVAILABLE (NEEDS wlr-randr) ")
+        elif current is None:
+            self.res_label.set_text(" UNKNOWN ")
+        else:
+            self.res_label.set_text(" %s " % mode_label(current))
+
+    def refresh_resolutions(self):
+        def done(_result, output):
+            self._res_busy = False
+            if not self._closed:
+                self._show_resolution(output)
+            return False
+        self._res_job(lambda: None, done)
+
+    def cycle_resolution(self, delta):
+        if self._res_pending or self._res_busy:
+            return
+        modes = self._res_modes
+        current = next((i for i, m in enumerate(modes) if m["current"]), None)
+        if not modes or current is None or len(modes) < 2 or self._res_output is None:
+            self.refresh_resolutions()
+            return
+        previous = modes[current]
+        target = modes[(current + delta) % len(modes)]
+        name = self._res_output["name"]
+        def done(ok, output):
+            self._res_busy = False
+            if self._closed:
+                return False
+            if not ok:
+                self._show_resolution(output)
+                self.res_label.set_text(" COULD NOT SET %s " % mode_label(target))
+                return False
+            self._res_pending = {"output": name, "previous": previous,
+                                 "target": target, "left": RES_CONFIRM_SECONDS}
+            self._show_resolution(output)
+            self._refit_window()
+            self.res_keep.show()
+            self._res_countdown_label()
+            self._res_pending["timer"] = GLib.timeout_add_seconds(1, self._res_tick)
+            return False
+        self._res_job(lambda: set_mode(name, target), done)
+
+    def _res_countdown_label(self):
+        p = self._res_pending
+        self.res_label.set_text(" %s - KEEP? PRESS OK (%d) " % (mode_label(p["target"]), p["left"]))
+
+    def _res_tick(self):
+        p = self._res_pending
+        if p is None or self._closed:
+            return False
+        p["left"] -= 1
+        if p["left"] <= 0:
+            p["timer"] = None
+            self.revert_resolution()
+            return False
+        self._res_countdown_label()
+        return True
+
+    def keep_resolution(self):
+        p = self._res_pending
+        if p is None:
+            return
+        if p.get("timer"):
+            GLib.source_remove(p["timer"])
+        self._res_pending = None
+        self.res_keep.hide()
+        t = p["target"]
+        self._prefs["resolution"] = {"output": p["output"], "w": t["w"], "h": t["h"],
+                                     "refresh": t["refresh"]}
+        self._save_prefs()
+        self.res_label.set_text(" %s " % mode_label(t))
+
+    def revert_resolution(self):
+        p = self._res_pending
+        if p is None:
+            return
+        if p.get("timer"):
+            GLib.source_remove(p["timer"])
+        self._res_pending = None
+        self.res_keep.hide()
+        def done(_ok, output):
+            self._res_busy = False
+            if not self._closed:
+                self._show_resolution(output)
+                self._refit_window()
+            return False
+        self._res_busy = False
+        self._res_job(lambda: set_mode(p["output"], p["previous"]), done)
+
+    def _refit_window(self):
+        """After the screen size changes, make the TV fill the new screen."""
+        if self.window_full:
+            GLib.timeout_add(700, lambda: (self.fullscreen(), False)[1])
+
+    def _apply_saved_resolution(self):
+        """At start-up: restore the resolution kept last time, if still offered."""
+        saved = self._prefs.get("resolution")
+        if not saved or IS_WINDOWS:
+            return False
+        def work():
+            target = saved_mode_to_apply(main_output(list_outputs()), saved)
+            return set_mode(saved["output"], target) if target else False
+        def done(changed, output):
+            self._res_busy = False
+            if not self._closed:
+                self._show_resolution(output)
+                if changed:
+                    self._refit_window()
+            return False
+        self._res_job(work, done)
+        return False
 
     def _wifi_job(self,args,callback):
         def work():
@@ -2304,15 +2614,42 @@ class TVWindow(Gtk.Window):
             return False
 
         if self.screen == "SETTINGS":
-            if key in (Gdk.KEY_Left, Gdk.KEY_Right) and \
-                    not isinstance(self.get_focus(), Gtk.Entry):
-                self.cycle_sound_output(1 if key == Gdk.KEY_Right else -1)
+            if self._res_pending is not None:
+                # A new resolution is waiting: OK keeps it, anything else waits.
+                if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+                    self.keep_resolution()
                 return True
-            if key in (Gdk.KEY_Up, Gdk.KEY_Down):
-                self._move_listbox(self.wifi_list, 1 if key == Gdk.KEY_Down else -1)
+            if isinstance(self.get_focus(), Gtk.Entry):
+                return False
+            row = self._settings_row
+            if key in (Gdk.KEY_Left, Gdk.KEY_Right):
+                step = 1 if key == Gdk.KEY_Right else -1
+                if row == "sound":
+                    self.cycle_sound_output(step)
+                elif row == "resolution":
+                    self.cycle_resolution(step)
+                return True
+            if key == Gdk.KEY_Down:
+                if row == "sound":
+                    self._set_settings_row("resolution")
+                elif row == "resolution":
+                    self._set_settings_row("wifi")
+                else:
+                    self._move_listbox(self.wifi_list, 1)
+                return True
+            if key == Gdk.KEY_Up:
+                if row == "resolution":
+                    self._set_settings_row("sound")
+                elif row == "wifi":
+                    selected = self.wifi_list.get_selected_row()
+                    if selected is None or selected.get_index() == 0:
+                        self._set_settings_row("resolution")
+                    else:
+                        self._move_listbox(self.wifi_list, -1)
                 return True
             if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
-                self._wifi_connect()
+                if row == "wifi":
+                    self._wifi_connect()
                 return True
             if key in (Gdk.KEY_r, Gdk.KEY_R):
                 self.refresh_wifi()
