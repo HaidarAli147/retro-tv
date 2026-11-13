@@ -187,6 +187,11 @@ D-pad, OK, Back, volume/mute, a text box that types on the TV (Wi-Fi passwords,
 URLs) and a touchpad with left/right click and scroll. There is no power button
 on the phone on purpose.
 
+**At start-up the TV now opens the PHONE REMOTE screen** instead of resuming
+live TV. The last channel stays highlighted in LIVE TV but does not autoplay.
+If the remote cannot start (files missing, no free port), the TV falls back to
+the old behaviour and resumes live TV.
+
 Files: `remote_server.py` (small web server started by `tv.py`, runs as your
 user, never root) and `remote_page.html` (the phone page). It makes its own
 virtual keyboard and mouse, so it **does not use or change `rpi_bridge.py`**;

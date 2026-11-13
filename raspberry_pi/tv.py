@@ -1339,6 +1339,21 @@ class TVWindow(Gtk.Window):
             self.play_selected()
         return False   # GLib.idle_add: do not call again
 
+    def open_remote_on_start(self):
+        """Runs once at start-up: show PHONE REMOTE (QR code) instead of
+        jumping into live TV. The last channel stays selected in the list
+        but does not autoplay. If the remote could not start, fall back to
+        the old behaviour of resuming live TV."""
+        if self.remote is None:
+            return self.resume_playback()
+        self.resume_pending = False
+        for idx, app in enumerate(self.home_apps):
+            if app["kind"] == "remote":
+                self.select_home_tile(idx)
+                self.launch_app(app)
+                break
+        return False   # GLib.idle_add: do not call again
+
     def activate_row(self, row):
         """What a press on a listbox row does: open the keyboard for the
         pinned search row, otherwise play that channel."""
@@ -2268,7 +2283,7 @@ def main():
     win.apply_screen()    # shows Home, hides everything else, to start with
     win.grab_focus()
     play_chime()
-    GLib.idle_add(win.resume_playback)
+    GLib.idle_add(win.open_remote_on_start)
     Gtk.main()
 
 
