@@ -6,6 +6,8 @@ HOME  - a row of app tiles: LIVE TV, TOD, any apps you have added, and
 LIVE  - channels from an M3U, played by mpv rendered inside this window.
 WEB   - TOD, or any app added through the store, in an embedded page.
 STORE - type a name and a URL to add a new app to the home screen.
+REMOTE - QR code + 6-digit code: phones on the same Wi-Fi become a
+         remote (see remote_server.py and remote_page.html).
 
 Controls (all reachable from the joystick alone):
     left / right    move along the home row / do nothing elsewhere
@@ -54,6 +56,12 @@ for _ver in ("4.1", "4.0"):
         break
     except (ValueError, ImportError):
         continue
+
+# Phone remote is optional: tv.py keeps working if its files are missing.
+try:
+    import remote_server
+except Exception:  # missing file or a broken copy must never stop the TV
+    remote_server = None
 
 DEFAULT_PLAYLIST = os.path.expanduser("~/channels.m3u")
 if not os.path.exists(DEFAULT_PLAYLIST):
@@ -218,6 +226,30 @@ row:selected .item, row:selected .item-sub { color: #ffff00; }
 }
 .tile-selected .tile-icon,
 .tile-selected .tile-name { color: #ffff00; }
+
+/* ---- phone remote screen ---- */
+.qr-frame {
+    background-color: #ffffff;
+    border-top: 3px solid #404040;
+    border-left: 3px solid #404040;
+    border-bottom: 3px solid #ffffff;
+    border-right: 3px solid #ffffff;
+    padding: 8px;
+}
+.remote-code {
+    background-color: #000080;
+    color: #ffff00;
+    font-family: monospace;
+    font-size: 44px;
+    font-weight: 700;
+    padding: 8px 20px;
+}
+.remote-info {
+    color: #ffffff;
+    font-family: monospace;
+    font-size: 19px;
+    font-weight: 700;
+}
 
 /* ---- on-screen keyboard ---- */
 .key {
@@ -576,6 +608,26 @@ def native_window_id(win):
     gdk.gdk_win32_window_get_handle.argtypes = [ctypes.c_void_p]
     return gdk.gdk_win32_window_get_handle(ptr)
 
+def qr_pixbuf(text, size=360):
+    """The QR code for text as a black-on-white picture, or None when
+    python3-qrcode is missing. Drawn by hand so no image library is needed."""
+    matrix = remote_server.qr_matrix(text) if remote_server else None
+    if not matrix:
+        return None
+    n = len(matrix)
+    scale = max(1, size // n)
+    side = n * scale
+    rows = bytearray()
+    for line in matrix:
+        row = bytearray()
+        for dark in line:
+            row += (b"\x00\x00\x00" if dark else b"\xff\xff\xff") * scale
+        rows += bytes(row) * scale
+    return GdkPixbuf.Pixbuf.new_from_bytes(
+        GLib.Bytes.new(bytes(rows)), GdkPixbuf.Colorspace.RGB,
+        False, 8, side, side, side * 3)
+
+
 SEGMENTS = 16          # blocks in the volume bar
 # PipeWire owns the Pi's volume; do not secretly attenuate it again in mpv.
 START_VOLUME = 70 if IS_WINDOWS else 100
@@ -763,7 +815,7 @@ WEB_KEYBOARD_JS = r"""
 class TVWindow(Gtk.Window):
     # kind of tile -> its icon text; anything else uses the first 3 letters
     # of the app's own name (so a custom app just works with no config).
-    TILE_ICON = {"live": "TV", "store": "+", "settings": "⚙"}
+    TILE_ICON = {"live": "TV", "store": "+", "settings": "⚙", "remote": "RC"}
 
     def __init__(self, playlist_path):
         super().__init__(title="TV")
@@ -810,6 +862,15 @@ class TVWindow(Gtk.Window):
             self._prefs = {}
         self._icon_generation = 0
         self._icon_jobs = []
+        self._remote_timer = None
+        self.remote = None
+        if remote_server is not None and not IS_WINDOWS:
+            try:
+                server = remote_server.RemoteServer()
+                if server.start():
+                    self.remote = server
+            except Exception:
+                self.remote = None   # the TV still works without the remote
 
         self.state = load_state()
         # Only resume automatically if a previous run actually left a
@@ -828,6 +889,7 @@ class TVWindow(Gtk.Window):
         self._build_web()
         self._build_store()
         self._build_settings()
+        self._build_remote()
 
         self.connect("key-press-event", self.on_key)
         self.connect("destroy", self.on_destroy)
@@ -923,7 +985,8 @@ class TVWindow(Gtk.Window):
             [{"kind": "web", "name": "GOAAAL LIVE", "url": "https://appendhub.com/go-wall/app/?match-view"}] +
             [{"kind": "web", "name": a.get("name") or "APP", "url": a["url"]}
              for a in custom if a.get("url")] +
-            [{"kind": "store", "name": "APP STORE", "url": None},
+            [{"kind": "remote", "name": "PHONE REMOTE", "url": None},
+             {"kind": "store", "name": "APP STORE", "url": None},
              {"kind": "settings", "name": "SETTINGS", "url": None}]
         )
         if self.home_index >= len(self.home_apps):
@@ -1027,6 +1090,12 @@ class TVWindow(Gtk.Window):
             self.refresh_store_list()
             self.screen = "STORE"
             self.apply_screen()
+        elif kind == "remote":
+            self.refresh_remote()
+            self.screen = "REMOTE"
+            self.apply_screen()
+            if self._remote_timer is None:
+                self._remote_timer = GLib.timeout_add_seconds(1, self._remote_tick)
 
     def go_home(self):
         self.screen = "HOME"
@@ -1704,6 +1773,91 @@ class TVWindow(Gtk.Window):
         self._osk_entry(self.wifi_password,"WI-FI PASSWORD")
         self._networks=[]
 
+    # ================================================================
+    #  REMOTE - QR code so a phone on the same Wi-Fi becomes a remote
+    # ================================================================
+    def _build_remote(self):
+        self.remote_screen = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.outer.pack_start(self.remote_screen, True, True, 0)
+        header = Gtk.Label(label=" PHONE REMOTE ", xalign=0)
+        header.get_style_context().add_class("brand")
+        self.remote_screen.pack_start(header, False, False, 0)
+
+        body = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=40)
+        body.set_halign(Gtk.Align.CENTER)
+        body.set_valign(Gtk.Align.CENTER)
+        self.remote_screen.pack_start(body, True, True, 0)
+
+        frame = Gtk.Box()
+        frame.get_style_context().add_class("qr-frame")
+        frame.set_valign(Gtk.Align.CENTER)
+        self.remote_qr = Gtk.Image()
+        frame.pack_start(self.remote_qr, False, False, 0)
+        body.pack_start(frame, False, False, 0)
+
+        info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        info.set_valign(Gtk.Align.CENTER)
+        body.pack_start(info, False, False, 0)
+        self.remote_steps = Gtk.Label(
+            label="1. CONNECT YOUR PHONE TO THIS WI-FI\n"
+                  "2. SCAN THE QR CODE WITH THE CAMERA\n"
+                  "3. OR OPEN THE ADDRESS AND TYPE THE CODE", xalign=0)
+        self.remote_steps.get_style_context().add_class("remote-info")
+        info.pack_start(self.remote_steps, False, False, 0)
+        self.remote_url = Gtk.Label(label="", xalign=0, selectable=False)
+        self.remote_url.get_style_context().add_class("remote-info")
+        info.pack_start(self.remote_url, False, False, 0)
+        self.remote_code = Gtk.Label(label="------")
+        self.remote_code.get_style_context().add_class("remote-code")
+        self.remote_code.set_halign(Gtk.Align.START)
+        info.pack_start(self.remote_code, False, False, 0)
+        self.remote_status = Gtk.Label(label="", xalign=0)
+        self.remote_status.set_line_wrap(True)
+        self.remote_status.set_max_width_chars(42)
+        self.remote_status.get_style_context().add_class("remote-info")
+        info.pack_start(self.remote_status, False, False, 0)
+
+        hint = Gtk.Label(label=" SAME WI-FI ONLY   BACK TO RETURN ", xalign=0)
+        hint.get_style_context().add_class("hint")
+        self.remote_screen.pack_start(hint, False, False, 0)
+
+    def refresh_remote(self):
+        """Redraws the QR code - the Pi's address can change after Wi-Fi changes."""
+        if self.remote is None:
+            self.remote_qr.clear()
+            self.remote_url.set_text("")
+            self.remote_code.set_text("------")
+            self.remote_status.set_text(
+                "PHONE REMOTE IS NOT RUNNING.\n"
+                "PUT remote_server.py AND remote_page.html NEXT TO tv.py\n"
+                "(bash install_remote.sh) AND RESTART THE TV.")
+            return
+        link = self.remote.qr_link()
+        pixbuf = qr_pixbuf(link)
+        if pixbuf is None:
+            self.remote_qr.clear()
+        else:
+            self.remote_qr.set_from_pixbuf(pixbuf)
+        self.remote_url.set_text("ADDRESS:  " + self.remote.url())
+        self.remote_code.set_text(self.remote.pairing.code)
+        self._remote_status()
+
+    def _remote_status(self):
+        lines = ["PAIRED PHONES: %d" % self.remote.pairing.count()]
+        if self.remote_qr.get_pixbuf() is None:
+            lines.append("NO QR PICTURE: sudo apt install python3-qrcode")
+        if not getattr(self.remote.input, "available", False):
+            lines.append("KEYS/MOUSE OFF: run install_remote.sh, then reboot")
+        self.remote_status.set_text("\n".join(lines))
+
+    def _remote_tick(self):
+        """Once a second while the REMOTE screen is open; stops itself after."""
+        if self._closed or self.screen != "REMOTE" or self.remote is None:
+            self._remote_timer = None
+            return False
+        self._remote_status()
+        return True
+
     def _back_policy(self,combo):
         self._prefs["back_behavior"]=combo.get_active_id()
         try:
@@ -1901,6 +2055,7 @@ class TVWindow(Gtk.Window):
         self.web_box.set_visible(s == "WEB")
         self.store_screen.set_visible(s == "STORE")
         self.settings_screen.set_visible(s == "SETTINGS")
+        self.remote_screen.set_visible(s == "REMOTE")
 
         if s == "HOME" and self.home_tiles:
             self.home_tiles[self.home_index].grab_focus()
@@ -1911,6 +2066,8 @@ class TVWindow(Gtk.Window):
             self.store_add_button.grab_focus()
         elif s == "SETTINGS":
             self.wifi_list.grab_focus()
+        elif s == "REMOTE":
+            self.grab_focus()
         elif s == "LIVE" and not self.video_full:
             row = self.listbox.get_selected_row()
             if row:
@@ -2072,6 +2229,8 @@ class TVWindow(Gtk.Window):
         self._closed = True
         if self._volume_timer is not None:
             GLib.source_remove(self._volume_timer)
+        if self.remote is not None:
+            self.remote.stop()
         self._audio_workers.shutdown(wait=False, cancel_futures=True)
         self._icon_workers.shutdown(wait=False, cancel_futures=True)
         self._wifi_workers.shutdown(wait=False, cancel_futures=True)

@@ -178,3 +178,36 @@ Retro TV's **GOAAAL LIVE** home tile opens `https://appendhub.com/go-wall/app/?m
 3. On the Goaaal controller, choose **📺 Send live match** under the camera you want on Retro TV. You can change cameras without leaving the viewer.
 
 The Pi needs network access and a WebRTC-capable browser engine. The embedded WebKitGTK view may lack suitable codecs or WebRTC support on some Raspberry Pi OS images. If it fails, use Chromium on the Pi to open the same viewer link; this path is not a guaranteed hardware-accelerated mpv stream. The Goaaal website and Retro TV additions must both be deployed to use the new feature.
+
+## Phone remote (test branch `feature/phone-remote`, not on main)
+
+A **PHONE REMOTE** tile on the Home screen shows a QR code, the Pi's address
+and a 6-digit code. Any phone **on the same Wi-Fi** that scans it gets a remote:
+D-pad, OK, Back, volume/mute, a text box that types on the TV (Wi-Fi passwords,
+URLs) and a touchpad with left/right click and scroll. There is no power button
+on the phone on purpose.
+
+Files: `remote_server.py` (small web server started by `tv.py`, runs as your
+user, never root) and `remote_page.html` (the phone page). It makes its own
+virtual keyboard and mouse, so it **does not use or change `rpi_bridge.py`**;
+the joystick keeps working alongside it.
+
+Install (from the folder with these files, as your normal user):
+
+    bash install_remote.sh
+    sudo reboot
+
+The installer backs up `~/tv.py` to `~/tv.py.before-phone-remote`, installs
+`python3-qrcode`, copies the three files to your home folder and adds
+`/etc/udev/rules.d/99-retro-tv-uinput.rules` (lets the `input` group create a
+virtual keyboard/mouse). It does not touch the Arduino bridge, the shutdown
+button service, the playlist or the chime. **Do not run `setup.sh` for this**:
+it would replace the bridge in `/opt/rpi-bridge`.
+
+Undo:
+
+    bash uninstall_remote.sh
+
+Checks: `python3 -m unittest tests.test_remote_server -v` (no display needed).
+Typing is English letters, numbers and symbols only. The REMOTE screen says
+"KEYS/MOUSE OFF" if the uinput permission is missing; volume still works then.

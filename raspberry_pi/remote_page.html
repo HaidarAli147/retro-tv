@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#7851A9">
+<title>Retro TV Remote</title>
+<style>
+:root {
+  --purple: #7851A9;
+  --purple-deep: #4a2f6e;
+  --ink: #120b1c;
+  --panel: #1d1229;
+  --line: #3a2752;
+  --text: #f4eefc;
+  --dim: #b7a6cf;
+  --yellow: #ffe94a;
+  --danger: #ff6b6b;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; background: var(--ink); color: var(--text);
+  font-family: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace; }
+body { min-height: 100vh; display: flex; justify-content: center; }
+main { width: 100%; max-width: 440px; padding: 14px 16px 28px; }
+header { display: flex; align-items: center; justify-content: space-between;
+  border: 2px solid var(--purple); background: var(--purple); color: #fff;
+  padding: 10px 12px; margin-bottom: 14px; }
+header h1 { font-size: 16px; letter-spacing: .12em; margin: 0; }
+#dot { width: 10px; height: 10px; border-radius: 50%; background: var(--danger); }
+#dot.on { background: #7dff9b; box-shadow: 0 0 8px #7dff9b; }
+.panel { border: 2px solid var(--line); background: var(--panel); padding: 12px; margin-bottom: 12px; }
+.label { font-size: 11px; letter-spacing: .14em; color: var(--dim); margin: 0 0 8px; }
+button { font: inherit; color: var(--text); background: var(--purple-deep);
+  border: 2px solid var(--purple); border-radius: 0; min-height: 52px;
+  font-size: 16px; font-weight: 700; letter-spacing: .06em; touch-action: manipulation;
+  user-select: none; -webkit-user-select: none; }
+button:active, button.pressed { background: var(--purple); color: var(--yellow); }
+.dpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.dpad button { min-height: 72px; font-size: 24px; }
+.dpad .ok { background: var(--purple); font-size: 18px; }
+.row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
+.row2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 8px; }
+#pad { height: 210px; border: 2px dashed var(--purple); background:
+  repeating-linear-gradient(0deg, transparent 0 23px, #2a1b3c 23px 24px),
+  repeating-linear-gradient(90deg, transparent 0 23px, #2a1b3c 23px 24px);
+  touch-action: none; display: flex; align-items: center; justify-content: center;
+  color: var(--dim); font-size: 12px; letter-spacing: .14em; text-align: center; padding: 10px; }
+#pad.active { border-style: solid; color: var(--yellow); }
+.typing { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+input { font: inherit; font-size: 16px; color: var(--ink); background: #fff;
+  border: 2px solid var(--purple); border-radius: 0; padding: 12px; min-width: 0; }
+#msg { min-height: 20px; font-size: 13px; color: var(--yellow); margin: 0 0 10px; }
+#msg.err { color: var(--danger); }
+#pairing { display: none; }
+#pairing p { color: var(--dim); font-size: 14px; line-height: 1.5; }
+body.unpaired #pairing { display: block; }
+body.unpaired #controls { display: none; }
+footer { text-align: center; color: var(--dim); font-size: 11px; letter-spacing: .1em; margin-top: 18px; }
+</style>
+</head>
+<body class="unpaired">
+<main>
+  <header><h1>RETRO TV · REMOTE</h1><span id="dot" aria-label="connection"></span></header>
+  <p id="msg" role="status" aria-live="polite"></p>
+
+  <section id="pairing" class="panel">
+    <p class="label">PAIR WITH THE TV</p>
+    <p>Scan the QR code on the TV's <b>PHONE REMOTE</b> screen, or type the 6-digit code shown there.</p>
+    <form id="pair-form" class="typing">
+      <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6"
+             pattern="[0-9]{6}" placeholder="123456" aria-label="pairing code">
+      <button type="submit">PAIR</button>
+    </form>
+  </section>
+
+  <div id="controls">
+    <section class="panel">
+      <p class="label">NAVIGATE</p>
+      <div class="dpad">
+        <span></span><button data-key="UP" data-hold aria-label="up">▲</button><span></span>
+        <button data-key="LEFT" data-hold aria-label="left">◀</button>
+        <button class="ok" data-key="ENTER">OK</button>
+        <button data-key="RIGHT" data-hold aria-label="right">▶</button>
+        <span></span><button data-key="DOWN" data-hold aria-label="down">▼</button><span></span>
+      </div>
+      <div class="row">
+        <button data-key="BACK">⟵ BACK</button>
+        <button data-volume="mute" aria-label="mute">MUTE</button>
+        <button data-key="BACKSPACE" aria-label="backspace">⌫</button>
+      </div>
+      <div class="row2">
+        <button data-volume="down" data-hold>VOL −</button>
+        <button data-volume="up" data-hold>VOL +</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <p class="label">TYPE ON THE TV</p>
+      <form id="type-form" class="typing">
+        <input id="text" maxlength="200" autocomplete="off" autocapitalize="off"
+               spellcheck="false" placeholder="Wi-Fi password, URL, search…" aria-label="text to type">
+        <button type="submit">SEND</button>
+      </form>
+    </section>
+
+    <section class="panel">
+      <p class="label">MOUSE</p>
+      <div id="pad">DRAG TO MOVE · TAP TO CLICK</div>
+      <div class="row2">
+        <button data-click="left">L CLICK</button>
+        <button data-click="right">R CLICK</button>
+      </div>
+      <div class="row2">
+        <button data-scroll="1" data-hold aria-label="scroll up">SCROLL ▲</button>
+        <button data-scroll="-1" data-hold aria-label="scroll down">SCROLL ▼</button>
+      </div>
+    </section>
+  </div>
+  <footer>SAME WI-FI ONLY · APPEND HUB</footer>
+</main>
+<script>
+(() => {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const msg = $('msg');
+  let token = '';
+  try { token = sessionStorage.getItem('rtv-token') || ''; } catch (_) {}
+
+  function say(text, isError) {
+    msg.textContent = text || '';
+    msg.className = isError ? 'err' : '';
+  }
+  function setPaired(on) {
+    document.body.classList.toggle('unpaired', !on);
+    $('dot').classList.toggle('on', on);
+  }
+  function saveToken(t) {
+    token = t || '';
+    try { t ? sessionStorage.setItem('rtv-token', t) : sessionStorage.removeItem('rtv-token'); } catch (_) {}
+  }
+  function lost() {
+    saveToken('');
+    setPaired(false);
+    say('The TV was restarted. Scan the QR code on the TV again.', true);
+  }
+
+  async function pair(code) {
+    say('Pairing…');
+    try {
+      const r = await fetch('/api/pair', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
+      const body = await r.json().catch(() => ({}));
+      if (r.ok && body.token) { saveToken(body.token); setPaired(true); say('Connected ✓'); checkStatus(); return; }
+      say(body.error || 'Could not pair', true);
+    } catch (_) { say('Cannot reach the TV. Is this phone on the same Wi-Fi?', true); }
+    setPaired(false);
+  }
+
+  async function checkStatus() {
+    try {
+      const r = await fetch('/api/status', { headers: { 'X-Remote-Token': token } });
+      const s = await r.json();
+      setPaired(!!s.paired);
+      if (!s.paired && token) lost();
+      else if (s.paired && !s.input) say('Keys and mouse are unavailable on the TV (volume still works). See the TV setup notes.', true);
+    } catch (_) { say('Cannot reach the TV. Is this phone on the same Wi-Fi?', true); }
+  }
+
+  let busy = 0;
+  async function send(cmd) {
+    if (!token) { setPaired(false); return false; }
+    busy++;
+    try {
+      const r = await fetch('/api/cmd', { method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Remote-Token': token },
+        body: JSON.stringify(cmd) });
+      if (r.status === 401) { lost(); return false; }
+      if (r.status === 503) {
+        const b = await r.json().catch(() => ({}));
+        say(b.error === 'the TV could not do that'
+          ? 'The TV could not do that — keys/mouse unavailable.'
+          : (b.error || 'The TV is busy, try again.'), true);
+        return false;
+      }
+      if (!r.ok) { const b = await r.json().catch(() => ({})); say(b.error || 'Error ' + r.status, true); return false; }
+      if (msg.className === 'err') say('');
+      return true;
+    } catch (_) { say('Lost connection to the TV.', true); return false; }
+    finally { busy--; }
+  }
+
+  function buzz() { if (navigator.vibrate) navigator.vibrate(8); }
+
+  function commandFor(btn) {
+    const d = btn.dataset;
+    if (d.key) return { type: 'key', name: d.key };
+    if (d.volume) return { type: 'volume', action: d.volume };
+    if (d.click) return { type: 'click', button: d.click };
+    if (d.scroll) return { type: 'scroll', step: Number(d.scroll) };
+    return null;
+  }
+
+  // Buttons: one press per tap; data-hold buttons repeat while held.
+  document.querySelectorAll('#controls button:not([type="submit"])').forEach((btn) => {
+    const cmd = commandFor(btn);
+    if (!cmd) return;
+    let wait = 0, repeat = 0;
+    const stop = () => { clearTimeout(wait); clearInterval(repeat); btn.classList.remove('pressed'); };
+    btn.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      btn.classList.add('pressed');
+      buzz();
+      send(cmd);
+      if ('hold' in btn.dataset) {
+        wait = setTimeout(() => { repeat = setInterval(() => { if (!busy) send(cmd); }, 140); }, 420);
+      }
+    });
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach((t) => btn.addEventListener(t, stop));
+    btn.addEventListener('contextmenu', (ev) => ev.preventDefault());
+  });
+
+  // Typing
+  $('type-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const text = $('text').value;
+    if (!text) return;
+    if (/[^\x20-\x7E]/.test(text)) { say('Only English letters, numbers and symbols can be typed.', true); return; }
+    if (await send({ type: 'text', text })) { $('text').value = ''; say('Typed ✓'); }
+  });
+
+  // Touchpad: batch movement every 40 ms; a short still tap is a left click.
+  const pad = $('pad');
+  const SPEED = 1.6;
+  let last = null, start = null, travelled = 0, accX = 0, accY = 0, moving = false;
+  async function flush() {
+    if (moving) return;
+    const dx = Math.trunc(accX), dy = Math.trunc(accY);
+    if (!dx && !dy) return;
+    accX -= dx; accY -= dy;
+    moving = true;
+    await send({ type: 'move', dx: Math.max(-200, Math.min(200, dx)), dy: Math.max(-200, Math.min(200, dy)) });
+    moving = false;
+  }
+  setInterval(flush, 40);
+  pad.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    pad.setPointerCapture(ev.pointerId);
+    pad.classList.add('active');
+    last = { x: ev.clientX, y: ev.clientY };
+    start = { t: performance.now() };
+    travelled = 0;
+  });
+  pad.addEventListener('pointermove', (ev) => {
+    if (!last) return;
+    const dx = ev.clientX - last.x, dy = ev.clientY - last.y;
+    last = { x: ev.clientX, y: ev.clientY };
+    travelled += Math.abs(dx) + Math.abs(dy);
+    const fast = Math.hypot(dx, dy) > 12 ? 2.2 : 1;      // simple acceleration
+    accX += dx * SPEED * fast;
+    accY += dy * SPEED * fast;
+  });
+  function padEnd() {
+    if (!last) return;
+    if (travelled < 6 && performance.now() - start.t < 260) { buzz(); send({ type: 'click', button: 'left' }); }
+    last = null;
+    pad.classList.remove('active');
+  }
+  pad.addEventListener('pointerup', padEnd);
+  pad.addEventListener('pointercancel', padEnd);
+
+  // Pairing form (when someone types the address instead of scanning).
+  $('pair-form').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const code = $('code').value.trim();
+    if (/^\d{6}$/.test(code)) pair(code); else say('Enter the 6 digits shown on the TV.', true);
+  });
+
+  // QR codes carry the code after # — pair with it, then hide it from the address bar.
+  const fromHash = /(?:^|[#&])code=(\d{6})/.exec(location.hash);
+  if (fromHash) {
+    history.replaceState(null, '', location.pathname);
+    pair(fromHash[1]);
+  } else if (token) {
+    checkStatus();
+  }
+})();
+</script>
+</body>
+</html>
