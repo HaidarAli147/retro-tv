@@ -227,6 +227,16 @@ row:selected .item, row:selected .item-sub { color: #ffff00; }
 .tile-selected .tile-icon,
 .tile-selected .tile-name { color: #ffff00; }
 
+/* ---- settings: sound output ---- */
+.sound-value {
+    background-color: #000080;
+    color: #ffff00;
+    font-family: monospace;
+    font-size: 22px;
+    font-weight: 700;
+    padding: 4px 16px;
+}
+
 /* ---- phone remote screen ---- */
 .qr-frame {
     background-color: #ffffff;
@@ -320,6 +330,79 @@ def read_speaker_volume():
         return parse_speaker_volume(result.stdout)
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
+
+
+# ---- SOUND OUTPUT (Settings) ----------------------------------------------
+# Everything (mpv, the chime, web apps, the volume knob) follows PipeWire's
+# default output, so choosing an output only has to change that default.
+_SINK_LINE = re.compile(r"^[\s│]*(\*)?\s*(\d+)\.\s+(.*?)\s*(\[vol:[^\]]*\])?\s*$")
+
+
+def parse_sinks(status_text):
+    """Audio sinks from `wpctl status`: [{"id", "name", "default"}, ...]."""
+    sinks, section, sub = [], None, None
+    for line in status_text.splitlines():
+        if line and not line[0].isspace():
+            section, sub = line.strip(), None          # Audio / Video / Settings
+            continue
+        header = re.match(r"^[\s│]*[├└]─\s*([\w ]+):", line)
+        if header:
+            sub = header.group(1).strip()
+            continue
+        if section == "Audio" and sub == "Sinks":
+            m = _SINK_LINE.match(line)
+            if m:
+                sinks.append({"id": int(m.group(2)), "name": m.group(3),
+                              "default": bool(m.group(1))})
+    return sinks
+
+
+def sink_label(name):
+    """Short, clear names for the TV screen."""
+    hdmi = re.search(r"\((HDMI[^)]*)\)", name)
+    if hdmi:
+        return "TV / MONITOR (%s)" % hdmi.group(1).upper()
+    if name.strip().lower() == "built-in audio stereo":
+        return "SPEAKER (3.5MM JACK)"
+    return name.upper()
+
+
+def next_sink(sinks, delta):
+    """The output after (or before) the current default, wrapping around."""
+    if not sinks:
+        return None
+    current = next((i for i, x in enumerate(sinks) if x["default"]), 0)
+    return sinks[(current + delta) % len(sinks)]
+
+
+def saved_sink_to_apply(sinks, saved_name):
+    """Id to switch to at start-up, or None if it is missing or already on."""
+    for sink in sinks:
+        if saved_name and sink["name"] == saved_name:
+            return None if sink["default"] else sink["id"]
+    return None
+
+
+def list_sinks():
+    if IS_WINDOWS:
+        return []
+    try:
+        result = subprocess.run(["wpctl", "status"], capture_output=True, text=True,
+                                check=True, timeout=2, env=dict(os.environ, LC_ALL="C"))
+        return parse_sinks(result.stdout)
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
+def set_default_sink(sink_id):
+    if IS_WINDOWS:
+        return False
+    try:
+        subprocess.run(["wpctl", "set-default", str(int(sink_id))],
+                       capture_output=True, check=True, timeout=2)
+        return True
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
 
 
 def http_icon_url(base, href):
@@ -890,6 +973,7 @@ class TVWindow(Gtk.Window):
         self._build_store()
         self._build_settings()
         self._build_remote()
+        self._apply_saved_sound_output()
 
         self.connect("key-press-event", self.on_key)
         self.connect("destroy", self.on_destroy)
@@ -1086,6 +1170,7 @@ class TVWindow(Gtk.Window):
             self.screen = "SETTINGS"
             self.apply_screen()
             self.refresh_wifi()
+            self.refresh_sound_outputs()
         elif kind == "store":
             self.refresh_store_list()
             self.screen = "STORE"
@@ -1762,6 +1847,22 @@ class TVWindow(Gtk.Window):
         header=Gtk.Label(label=" SETTINGS / WI-FI ",xalign=0)
         header.get_style_context().add_class("brand")
         self.settings_screen.pack_start(header,False,False,0)
+        sound_row=Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,spacing=10)
+        sound_row.pack_start(Gtk.Label(label="SOUND OUTPUT  (LEFT / RIGHT):",xalign=0),False,False,0)
+        prev_btn=Gtk.Button(label="◀")
+        prev_btn.set_can_focus(False)
+        prev_btn.connect("clicked",lambda *_:self.cycle_sound_output(-1))
+        sound_row.pack_start(prev_btn,False,False,0)
+        self.sound_label=Gtk.Label(label="CHECKING...",xalign=0.5)
+        self.sound_label.get_style_context().add_class("sound-value")
+        sound_row.pack_start(self.sound_label,False,False,0)
+        next_btn=Gtk.Button(label="▶")
+        next_btn.set_can_focus(False)
+        next_btn.connect("clicked",lambda *_:self.cycle_sound_output(1))
+        sound_row.pack_start(next_btn,False,False,0)
+        self.settings_screen.pack_start(sound_row,False,False,0)
+        self._sinks=[]
+        self._sound_busy=False
         self.settings_screen.pack_start(Gtk.Label(label="ESC / BACK BEHAVIOR",xalign=0),False,False,0)
         combo=Gtk.ComboBoxText()
         combo.append("step","BACK ONE STEP")
@@ -1887,6 +1988,70 @@ class TVWindow(Gtk.Window):
                 json.dump(self._prefs,f,indent=2)
         except OSError as exc:
             self.wifi_status.set_text(str(exc))
+
+    # ---------------- SOUND OUTPUT ----------------
+    def _save_prefs(self):
+        try:
+            os.makedirs(os.path.dirname(self._prefs_path), exist_ok=True)
+            with open(self._prefs_path, "w", encoding="utf-8") as f:
+                json.dump(self._prefs, f, indent=2)
+        except OSError:
+            pass
+
+    def _sound_job(self, work, done=None):
+        """Runs wpctl off the screen thread, then shows the result."""
+        if self._sound_busy or self._closed:
+            return
+        self._sound_busy = True
+        def run():
+            try:
+                work()
+                sinks = list_sinks()
+            except Exception:
+                sinks = []
+            GLib.idle_add(self._show_sinks, sinks, done)
+        threading.Thread(target=run, daemon=True).start()
+
+    def _show_sinks(self, sinks, done=None):
+        self._sound_busy = False
+        if self._closed:
+            return False
+        self._sinks = sinks
+        current = next((x for x in sinks if x["default"]), None)
+        if IS_WINDOWS:
+            self.sound_label.set_text(" NOT AVAILABLE ON WINDOWS ")
+        elif current is None:
+            self.sound_label.set_text(" NO SOUND OUTPUT FOUND ")
+        else:
+            self.sound_label.set_text(" %s " % sink_label(current["name"]))
+        if done:
+            done(current)
+        return False
+
+    def refresh_sound_outputs(self):
+        self._sound_job(lambda: None)
+
+    def cycle_sound_output(self, delta):
+        target = next_sink(self._sinks, delta)
+        if target is None or len(self._sinks) < 2:
+            self.refresh_sound_outputs()
+            return
+        def remember(current):
+            if current is not None:
+                self._prefs["sound_output"] = current["name"]
+                self._save_prefs()
+        self._sound_job(lambda: set_default_sink(target["id"]), remember)
+
+    def _apply_saved_sound_output(self):
+        """At start-up: switch back to the output chosen last time, if present."""
+        saved = self._prefs.get("sound_output")
+        if not saved or IS_WINDOWS:
+            return
+        def work():
+            target = saved_sink_to_apply(list_sinks(), saved)
+            if target is not None:
+                set_default_sink(target)
+        self._sound_job(work)
 
     def _wifi_job(self,args,callback):
         def work():
@@ -2139,6 +2304,10 @@ class TVWindow(Gtk.Window):
             return False
 
         if self.screen == "SETTINGS":
+            if key in (Gdk.KEY_Left, Gdk.KEY_Right) and \
+                    not isinstance(self.get_focus(), Gtk.Entry):
+                self.cycle_sound_output(1 if key == Gdk.KEY_Right else -1)
+                return True
             if key in (Gdk.KEY_Up, Gdk.KEY_Down):
                 self._move_listbox(self.wifi_list, 1 if key == Gdk.KEY_Down else -1)
                 return True

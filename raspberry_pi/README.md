@@ -220,3 +220,14 @@ layout, `@ " # ~ \ |` would come out wrong). Too many wrong codes from
 different phones makes a new code (the TV redraws the QR); paired phones
 keep working. The REMOTE screen says
 "KEYS/MOUSE OFF" if the uinput permission is missing; volume still works then.
+
+## Sound output (Settings)
+
+Settings now has **SOUND OUTPUT** at the top. Press **LEFT / RIGHT** (joystick,
+keyboard or the phone remote) or click ◀ ▶ to switch between the outputs the Pi
+has: speaker (3.5 mm jack), TV / monitor (HDMI), or any USB / Bluetooth speaker.
+It changes PipeWire's default output (`wpctl set-default`), so live TV, the
+chime, web apps and the volume knob all follow it. The choice is saved in
+`~/.config/retro-tv/preferences.json` and applied again at start-up if that
+output is present. Note: the Pi 4's headphone jack cannot detect whether
+speakers are plugged in, so this is a manual choice.
