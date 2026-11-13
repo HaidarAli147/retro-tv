@@ -38,6 +38,9 @@ import hashlib
 import json
 import os
 import re
+import select
+import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -629,6 +632,52 @@ def set_mode(output_name, m):
         return False
 
 
+# ---- GOAAAL LIVE in Chromium ------------------------------------------------
+# The live match viewer uses WebRTC, which Debian's WebKitGTK (the embedded
+# browser) does not support, so that tile opens in Chromium instead.
+GOAAAL_LIVE_URL = "https://appendhub.com/go-wall/app/?match-view"
+CHROMIUM_PROFILE = os.path.expanduser("~/.config/retro-tv/chromium")
+# The Arduino bridge's virtual keyboard (rpi_bridge.py, not changed). tv.py
+# only *reads* it to notice BACK while Chromium covers the screen.
+BRIDGE_KEYBOARD_NAME = "rpi-arduino-controller"
+
+
+def home_app_list(custom_apps):
+    """The Home screen tiles, in order."""
+    return (
+        [{"kind": "live", "name": "LIVE TV", "url": None}] +
+        [{"kind": "web", "name": "TOD", "url": TOD_URL}] +
+        [{"kind": "browser", "name": "GOAAAL LIVE", "url": GOAAAL_LIVE_URL}] +
+        [{"kind": "web", "name": a.get("name") or "APP", "url": a["url"]}
+         for a in custom_apps if a.get("url")] +
+        [{"kind": "remote", "name": "PHONE REMOTE", "url": None},
+         {"kind": "store", "name": "APP STORE", "url": None},
+         {"kind": "settings", "name": "SETTINGS", "url": None}]
+    )
+
+
+def find_chromium():
+    for name in ("chromium", "chromium-browser"):
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
+def chromium_command(binary, url, profile_dir, scale):
+    return [binary, "--kiosk", "--app=" + url,
+            "--user-data-dir=" + profile_dir,
+            "--force-device-scale-factor=%s" % scale,
+            "--autoplay-policy=no-user-gesture-required",
+            "--no-first-run", "--noerrdialogs", "--disable-infobars",
+            "--disable-session-crashed-bubble", "--password-store=basic"]
+
+
+def is_back_press(ev_type, code, value):
+    """EV_KEY (1), KEY_ESC (1), pressed (1) - what BACK sends."""
+    return ev_type == 1 and code == 1 and value == 1
+
+
 def http_icon_url(base, href):
     """Only request web resources; never open local files from page metadata."""
     url = urllib.parse.urljoin(base, href)
@@ -1175,6 +1224,7 @@ class TVWindow(Gtk.Window):
         if remote_server is not None and not IS_WINDOWS:
             try:
                 server = remote_server.RemoteServer()
+                server.on_key = self._on_remote_key
                 if server.start():
                     self.remote = server
             except Exception:
@@ -1243,6 +1293,7 @@ class TVWindow(Gtk.Window):
 
         home_hint = Gtk.Label(
             label=" LEFT/RIGHT CHOOSE   PRESS TO LAUNCH ", xalign=0)
+        self.home_hint = home_hint
         home_hint.get_style_context().add_class("hint")
         self.home_screen.pack_start(home_hint, False, False, 0)
 
@@ -1294,17 +1345,7 @@ class TVWindow(Gtk.Window):
 
     def rebuild_home_apps(self):
         """Re-reads apps.json and rebuilds the tiles - call after add/remove."""
-        custom = load_apps()
-        self.home_apps = (
-            [{"kind": "live", "name": "LIVE TV", "url": None}] +
-            [{"kind": "web", "name": "TOD", "url": TOD_URL}] +
-            [{"kind": "web", "name": "GOAAAL LIVE", "url": "https://appendhub.com/go-wall/app/?match-view"}] +
-            [{"kind": "web", "name": a.get("name") or "APP", "url": a["url"]}
-             for a in custom if a.get("url")] +
-            [{"kind": "remote", "name": "PHONE REMOTE", "url": None},
-             {"kind": "store", "name": "APP STORE", "url": None},
-             {"kind": "settings", "name": "SETTINGS", "url": None}]
-        )
+        self.home_apps = home_app_list(load_apps())
         if self.home_index >= len(self.home_apps):
             self.home_index = len(self.home_apps) - 1
         self._build_home_tiles()
@@ -1330,7 +1371,7 @@ class TVWindow(Gtk.Window):
             icon.get_style_context().add_class("tile-icon")
             icon.set_valign(Gtk.Align.CENTER)
             tile.pack_start(icon, True, True, 0)
-            if app["kind"] == "web":
+            if app["kind"] in ("web", "browser"):
                 future = self._icon_workers.submit(fetch_app_icon, app["url"])
                 self._icon_jobs.append(future)
                 future.add_done_callback(
@@ -1398,6 +1439,8 @@ class TVWindow(Gtk.Window):
                 self.current_web_key = app["url"]
             self.screen = "WEB"
             self.apply_screen()
+        elif kind == "browser":
+            self.open_in_chromium(app["url"])
         elif kind == "settings":
             self.screen = "SETTINGS"
             self.apply_screen()
@@ -1417,6 +1460,113 @@ class TVWindow(Gtk.Window):
             self.apply_screen()
             if self._remote_timer is None:
                 self._remote_timer = GLib.timeout_add_seconds(1, self._remote_tick)
+
+    # ================================================================
+    #  CHROMIUM - for pages the embedded browser cannot run (WebRTC)
+    # ================================================================
+    def open_in_chromium(self, url):
+        if getattr(self, "_browser", None) is not None:
+            return
+        binary = find_chromium()
+        if binary is None:
+            self._flash_hint(" GOAAAL LIVE NEEDS CHROMIUM:  sudo apt install chromium ")
+            return
+        if self.player.running:
+            self.player.stop()             # free the Pi for the live camera video
+        os.makedirs(CHROMIUM_PROFILE, exist_ok=True)
+        try:
+            self._browser = subprocess.Popen(
+                chromium_command(binary, url, CHROMIUM_PROFILE, UI_SCALE),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True)
+        except OSError as exc:
+            self._browser = None
+            self._flash_hint(" COULD NOT START CHROMIUM: %s " % exc)
+            return
+        self._flash_hint(" OPENING GOAAAL LIVE...   BACK RETURNS TO THE TV ")
+        self._browser_watch_stop = threading.Event()
+        threading.Thread(target=self._watch_bridge_back,
+                         args=(self._browser_watch_stop,), daemon=True).start()
+        GLib.timeout_add(500, self._browser_tick)
+
+    def _watch_bridge_back(self, stop):
+        """Reads the Arduino bridge's virtual keyboard (read-only, no grab):
+        BACK there closes Chromium. Needs the udev rule from install_remote.sh."""
+        try:
+            import evdev
+            devices = []
+            for path in evdev.list_devices():
+                try:
+                    dev = evdev.InputDevice(path)
+                except OSError:
+                    continue
+                if dev.name == BRIDGE_KEYBOARD_NAME:
+                    devices.append(dev)
+                else:
+                    dev.close()
+        except Exception:
+            return
+        try:
+            while devices and not stop.is_set():
+                ready, _, _ = select.select(devices, [], [], 0.5)
+                for dev in ready:
+                    for ev in dev.read():
+                        if is_back_press(ev.type, ev.code, ev.value):
+                            GLib.idle_add(self.close_chromium)
+        except Exception:
+            pass
+        finally:
+            for dev in devices:
+                try:
+                    dev.close()
+                except Exception:
+                    pass
+
+    def _browser_tick(self):
+        proc = getattr(self, "_browser", None)
+        if proc is None:
+            return False
+        if proc.poll() is None:
+            return True
+        self._browser_closed()            # closed some other way
+        return False
+
+    def close_chromium(self):
+        proc = getattr(self, "_browser", None)
+        if proc is None:
+            return False
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=3)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+        self._browser_closed()
+        return False
+
+    def _browser_closed(self):
+        if getattr(self, "_browser", None) is None:
+            return
+        self._browser = None
+        self._browser_watch_stop.set()
+        if self._closed:
+            return
+        self.go_home()
+        self.present()
+        if self.window_full:
+            self.fullscreen()
+
+    def _on_remote_key(self, name):
+        """Phone remote button pressed (called from the server thread)."""
+        if name == "BACK" and getattr(self, "_browser", None) is not None:
+            GLib.idle_add(self.close_chromium)
+
+    def _flash_hint(self, text, seconds=6):
+        self.home_hint.set_text(text)
+        GLib.timeout_add_seconds(seconds, lambda: (
+            self.home_hint.set_text(" LEFT/RIGHT CHOOSE   PRESS TO LAUNCH "), False)[1])
 
     def go_home(self):
         self.screen = "HOME"
@@ -2937,6 +3087,8 @@ class TVWindow(Gtk.Window):
         return False
 
     def on_destroy(self, *_):
+        if getattr(self, "_browser", None) is not None:
+            self.close_chromium()
         self._closed = True
         if self._volume_timer is not None:
             GLib.source_remove(self._volume_timer)

@@ -43,10 +43,15 @@ echo "== 4/4 Allowing the virtual keyboard/mouse =="
 # "uaccess" gives access only to whoever is logged in at the Pi's screen,
 # not to every program in a group. The file name must sort before 73-.
 RULE=/etc/udev/rules.d/60-retro-tv-uinput.rules
-echo 'KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"' \
-    | sudo tee "$RULE" >/dev/null
+# Line 2 lets the TV app READ (never send) the Arduino controller's virtual
+# keyboard, so BACK on the joystick can close GOAAAL LIVE in Chromium.
+sudo tee "$RULE" >/dev/null <<'RULES'
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="rpi-arduino-controller", TAG+="uaccess"
+RULES
 sudo udevadm control --reload-rules
 sudo udevadm trigger --name-match=uinput || true
+sudo udevadm trigger --subsystem-match=input || true
 
 echo
 echo "Done. Reboot so the TV app restarts with the remote:"

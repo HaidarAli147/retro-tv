@@ -19,6 +19,7 @@ rm -f "$HOME/remote_server.py" "$HOME/remote_page.html"
 sudo rm -f /etc/udev/rules.d/60-retro-tv-uinput.rules
 sudo udevadm control --reload-rules
 sudo udevadm trigger --name-match=uinput || true
+sudo udevadm trigger --subsystem-match=input || true
 
 echo
 echo "Removed. Reboot to finish:  sudo reboot"
