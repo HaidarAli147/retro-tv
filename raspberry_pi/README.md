@@ -177,9 +177,9 @@ Retro TV's **GOAAAL LIVE** home tile opens `https://appendhub.com/go-wall/app/?m
 2. Open **GOAAAL LIVE** on Retro TV; type the eight-digit match code shown on the controller in **Live Match Viewer**, then select **Connect to live match**.
 3. On the Goaaal controller, choose **📺 Send live match** under the camera you want on Retro TV. You can change cameras without leaving the viewer.
 
-The Pi needs network access and a WebRTC-capable browser engine. The embedded WebKitGTK view may lack suitable codecs or WebRTC support on some Raspberry Pi OS images. If it fails, use Chromium on the Pi to open the same viewer link; this path is not a guaranteed hardware-accelerated mpv stream. The Goaaal website and Retro TV additions must both be deployed to use the new feature.
+The viewer uses WebRTC, which Debian's WebKitGTK (the embedded browser in tv.py) does not support, so **the GOAAAL LIVE tile opens in Chromium** (full screen, kiosk mode, its own profile in `~/.config/retro-tv/chromium`, sized with SCREEN SIZE). **BACK** on the joystick or the phone remote closes Chromium and returns to the TV; closing Chromium any other way also returns. Live TV playback is stopped while it is open to keep the Pi fast. Needs `chromium` (installed on Raspberry Pi OS; otherwise `sudo apt install chromium`). For the joystick's BACK, `install_remote.sh` adds a udev line that lets tv.py *read* the Arduino bridge's virtual keyboard (`rpi-arduino-controller`); `rpi_bridge.py` itself is unchanged.
 
-## Phone remote (test branch `feature/phone-remote`, not on main)
+## Phone remote
 
 A **PHONE REMOTE** tile on the Home screen shows a QR code, the Pi's address
 and a 6-digit code. Any phone **on the same Wi-Fi** that scans it gets a remote:

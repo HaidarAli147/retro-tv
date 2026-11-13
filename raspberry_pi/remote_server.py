@@ -384,6 +384,7 @@ class RemoteServer:
         self._httpd = None
         self._thread = None
         self.running = False
+        self.on_key = None        # optional: called with the button name (e.g. "BACK")
 
     def start(self):
         """Starts listening on the first free port. False if none was free."""
@@ -433,6 +434,11 @@ class RemoteServer:
             return False
         if kind == "key":
             self.input.key(cmd[1])
+            if self.on_key is not None:
+                try:
+                    self.on_key(cmd[1])
+                except Exception:
+                    pass
         elif kind == "text":
             self.input.type_text(cmd[1])
         elif kind == "move":
