@@ -95,6 +95,14 @@ APPS_FILE = os.path.expanduser("~/.config/brack-tv/apps.json")
 CSS = b"""
 window, .root { background-color: #008080; }
 
+/* Base size for plain widgets (labels, buttons, lists, entries), equal to the
+   theme's normal look at 720p, so automatic scaling enlarges them too. */
+window, dialog { font-size: 15px; }
+button { padding: 4px 10px; min-height: 24px; min-width: 24px; }
+entry { padding: 2px 8px; min-height: 30px; }
+progressbar trough, progressbar progress { min-height: 8px; }
+progressbar text { font-size: 13px; }
+
 .sidebar {
     background-color: #c0c0c0;
     border-right: 3px solid #404040;
@@ -307,6 +315,95 @@ entry {
 
 
 CHIME = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chime.wav")
+# ---- automatic UI scaling ----------------------------------------------------
+# Every size in this file was designed for a 720p screen. On a bigger screen
+# (1080p monitor, 4K TV) everything is multiplied so it looks the same size.
+UI_DESIGN_HEIGHT = 720
+UI_SCALE = 1.0
+_RESCALE_HOOKS = []        # functions that re-apply sizes when the scale changes
+_CSS_PROVIDER = None
+
+
+def ui_scale_for(screen_height):
+    if not screen_height or screen_height <= UI_DESIGN_HEIGHT:
+        return 1.0
+    return round(min(4.0, screen_height / UI_DESIGN_HEIGHT), 2)
+
+
+def px(n):
+    """A design size (720p pixels) in real screen pixels."""
+    if n <= 0:
+        return n
+    return max(1, int(round(n * UI_SCALE)))
+
+
+# SCREEN SIZE in Settings: AUTO fits the screen, or a fixed percentage.
+SCALE_CHOICES = ["auto", 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5, 4.0]
+
+
+def clean_scale_choice(choice):
+    return choice if choice in SCALE_CHOICES else "auto"
+
+
+def effective_scale(choice, screen_height):
+    choice = clean_scale_choice(choice)
+    return ui_scale_for(screen_height) if choice == "auto" else float(choice)
+
+
+def scale_choice_label(choice, screen_height):
+    choice = clean_scale_choice(choice)
+    percent = round(effective_scale(choice, screen_height) * 100)
+    return "AUTO (%d%%)" % percent if choice == "auto" else "%d%%" % percent
+
+
+def next_scale_choice(choice, delta):
+    i = SCALE_CHOICES.index(clean_scale_choice(choice))
+    return SCALE_CHOICES[(i + delta) % len(SCALE_CHOICES)]
+
+
+def scale_css(css, factor):
+    if factor == 1.0:
+        return css
+    return re.sub(rb"(\d+(?:\.\d+)?)px",
+                  lambda m: b"%dpx" % round(float(m.group(1)) * factor), css)
+
+
+def scaled(apply):
+    """Run apply() now and again whenever the UI scale changes."""
+    apply()
+    _RESCALE_HOOKS.append(apply)
+    return apply
+
+
+def screen_height_now(window=None):
+    """Height of the screen the TV is on, as the app sees it."""
+    display = Gdk.Display.get_default()
+    if display is None:
+        return 0
+    monitor = None
+    gdk_window = window.get_window() if window is not None else None
+    if gdk_window is not None:
+        monitor = display.get_monitor_at_window(gdk_window)
+    if monitor is None:
+        monitor = display.get_primary_monitor() or display.get_monitor(0)
+    if monitor is None:
+        return 0
+    return monitor.get_geometry().height * monitor.get_scale_factor()
+
+
+def set_ui_scale(factor):
+    """Apply a new scale to the stylesheet and every registered widget."""
+    global UI_SCALE
+    UI_SCALE = factor
+    if _CSS_PROVIDER is not None:
+        _CSS_PROVIDER.load_from_data(scale_css(CSS, factor))
+    for hook in list(_RESCALE_HOOKS):
+        try:
+            hook()
+        except Exception:
+            pass
+
+
 LOGO_CACHE = os.path.expanduser("~/.cache/brack-tv-logos")
 LOGO_W, LOGO_H = 76, 50
 
@@ -570,7 +667,7 @@ def read_icon_resource(url):
 
 def decode_app_icon(data):
     loader = GdkPixbuf.PixbufLoader.new()
-    loader.set_size(64, 64)
+    loader.set_size(px(64), px(64))
     loader.write(data)
     loader.close()
     pixbuf = loader.get_pixbuf()
@@ -584,7 +681,7 @@ def fetch_app_icon(url):
     cache = os.path.join(APP_ICON_CACHE, hashlib.sha256(url.encode()).hexdigest() + ".png")
     cached = None
     try:
-        cached = GdkPixbuf.Pixbuf.new_from_file_at_scale(cache, 64, 64, True)
+        cached = GdkPixbuf.Pixbuf.new_from_file_at_scale(cache, px(64), px(64), True)
         if time.time() - os.path.getmtime(cache) < ICON_CACHE_SECONDS:
             return cached
     except (OSError, GLib.Error):
@@ -806,14 +903,14 @@ def native_window_id(win):
     gdk.gdk_win32_window_get_handle.argtypes = [ctypes.c_void_p]
     return gdk.gdk_win32_window_get_handle(ptr)
 
-def qr_pixbuf(text, size=360):
+def qr_pixbuf(text, size=None):
     """The QR code for text as a black-on-white picture, or None when
     python3-qrcode is missing. Drawn by hand so no image library is needed."""
     matrix = remote_server.qr_matrix(text) if remote_server else None
     if not matrix:
         return None
     n = len(matrix)
-    scale = max(1, size // n)
+    scale = max(1, (size or px(360)) // n)
     side = n * scale
     rows = bytearray()
     for line in matrix:
@@ -855,9 +952,8 @@ class VolumeOSD(Gtk.Window):
         box.pack_start(self.caption, False, False, 0)
 
         bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        bar.set_margin_start(12)
-        bar.set_margin_end(12)
-        bar.set_margin_bottom(12)
+        scaled(lambda: (bar.set_margin_start(px(12)), bar.set_margin_end(px(12)),
+                        bar.set_margin_bottom(px(12))))
         box.pack_start(bar, False, False, 0)
 
         self.segments = []
@@ -1058,6 +1154,8 @@ class TVWindow(Gtk.Window):
                 self._prefs = json.load(f)
         except (OSError, ValueError):
             self._prefs = {}
+        self._scale_choice = clean_scale_choice(self._prefs.get("ui_scale", "auto"))
+        set_ui_scale(effective_scale(self._scale_choice, screen_height_now()))
         self._icon_generation = 0
         self._icon_jobs = []
         self._remote_timer = None
@@ -1094,6 +1192,12 @@ class TVWindow(Gtk.Window):
 
         self.connect("key-press-event", self.on_key)
         self.connect("destroy", self.on_destroy)
+        # A new resolution (Settings, start-up restore, another TV) changes
+        # the screen size: rescale everything to match.
+        self._rescale_pending = None
+        screen = self.get_screen()
+        screen.connect("size-changed", lambda *_: self._schedule_rescale())
+        screen.connect("monitors-changed", lambda *_: self._schedule_rescale())
 
         self.populate()
         self.refresh_store_list()
@@ -1134,10 +1238,9 @@ class TVWindow(Gtk.Window):
         self.speaker_bar.set_show_text(True)
         self.speaker_bar.set_text("SPEAKER UNAVAILABLE" if not IS_WINDOWS
                                   else "SPEAKER LEVEL UNAVAILABLE ON WINDOWS")
-        self.speaker_bar.set_margin_start(24)
-        self.speaker_bar.set_margin_end(24)
-        self.speaker_bar.set_margin_top(8)
-        self.speaker_bar.set_margin_bottom(12)
+        bar = self.speaker_bar
+        scaled(lambda: (bar.set_margin_start(px(24)), bar.set_margin_end(px(24)),
+                        bar.set_margin_top(px(8)), bar.set_margin_bottom(px(12))))
         self.home_screen.pack_start(self.speaker_bar, False, False, 0)
 
     def _poll_speaker(self):
@@ -1208,7 +1311,7 @@ class TVWindow(Gtk.Window):
             tile = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
             tile.set_can_focus(True)          # needed for scroll-into-view
             tile.get_style_context().add_class("tile")
-            tile.set_size_request(190, 150)
+            tile.set_size_request(px(190), px(150))
 
             icon_text = self.TILE_ICON.get(app["kind"], app["name"][:3].upper())
             icon = Gtk.Label(label=icon_text)
@@ -1289,7 +1392,9 @@ class TVWindow(Gtk.Window):
             self.refresh_wifi()
             self.refresh_sound_outputs()
             self.refresh_resolutions()
-            self._set_settings_row("sound")
+            self.size_label.set_text(" %s " % scale_choice_label(
+                self._scale_choice, screen_height_now(self)))
+            self._set_settings_row("size")
         elif kind == "store":
             self.refresh_store_list()
             self.screen = "STORE"
@@ -1310,7 +1415,7 @@ class TVWindow(Gtk.Window):
     # ================================================================
     def _build_live(self):
         self.sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.sidebar.set_size_request(460, -1)
+        scaled(lambda: self.sidebar.set_size_request(px(460), -1))
         self.sidebar.get_style_context().add_class("sidebar")
         self.outer.pack_start(self.sidebar, False, False, 0)
 
@@ -1373,10 +1478,9 @@ class TVWindow(Gtk.Window):
         self.keyboard_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 
         grid = Gtk.Grid()
-        grid.set_column_spacing(4)
-        grid.set_row_spacing(4)
+        scaled(lambda: (grid.set_column_spacing(px(4)), grid.set_row_spacing(px(4)),
+                        grid.set_margin_top(px(16))))
         grid.set_halign(Gtk.Align.CENTER)
-        grid.set_margin_top(16)
         self.keyboard_box.pack_start(grid, True, True, 0)
 
         self.osk_widgets = []
@@ -1386,7 +1490,7 @@ class TVWindow(Gtk.Window):
                 key = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
                 key.get_style_context().add_class("key")
                 wide = len(label) > 1
-                key.set_size_request(76 if wide else 38, 38)
+                scaled(lambda k=key, w=wide: k.set_size_request(px(76 if w else 38), px(38)))
                 lab = Gtk.Label(label=label)
                 lab.get_style_context().add_class("key-label")
                 key.pack_start(lab, True, True, 0)
@@ -1440,7 +1544,7 @@ class TVWindow(Gtk.Window):
                 line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
 
                 img = Gtk.Image()
-                img.set_size_request(LOGO_W, LOGO_H)
+                img.set_size_request(px(LOGO_W), px(LOGO_H))
                 img.get_style_context().add_class("logo")
                 line.pack_start(img, False, False, 0)
                 self.logo_slots.append((img, logo))
@@ -1524,7 +1628,7 @@ class TVWindow(Gtk.Window):
     def _set_logo(self, img, path):
         try:
             pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(
-                path, LOGO_W, LOGO_H, True)
+                path, px(LOGO_W), px(LOGO_H), True)
             img.set_from_pixbuf(pb)
         except GLib.Error:
             pass          # unreadable image, leave the slot blank
@@ -1679,6 +1783,10 @@ class TVWindow(Gtk.Window):
                 self.webview = WEBKIT.WebView()
             settings = self.webview.get_settings()
             settings.set_user_agent(WEB_USER_AGENT)
+            try:
+                self.webview.set_zoom_level(UI_SCALE)   # web apps readable on big TVs
+            except (AttributeError, TypeError):
+                pass
             settings.set_property("enable-webgl", True)
             try:
                 settings.set_property("media-playback-requires-user-gesture", False)
@@ -1871,7 +1979,7 @@ class TVWindow(Gtk.Window):
             return False
         d = Gtk.Dialog(title="RETRO TV KEYBOARD", transient_for=self, modal=True)
         self._typing_dialog = d
-        d.set_default_size(750, 430)
+        d.set_default_size(px(750), px(430))
         body = d.get_content_area()
         preview = Gtk.Entry()
         preview.set_visibility(entry.get_visibility())
@@ -1880,7 +1988,7 @@ class TVWindow(Gtk.Window):
         body.pack_start(preview, False, False, 6)
         layout = [list("1234567890"),list("qwertyuiop"),list("asdfghjkl"),
                   list("zxcvbnm@./"),["SHIFT","SPACE","-","_",":","DEL","CLEAR","DONE"]]
-        grid = Gtk.Grid(column_spacing=4,row_spacing=4)
+        grid = Gtk.Grid(column_spacing=px(4),row_spacing=px(4))
         grid.set_halign(Gtk.Align.CENTER)
         body.pack_start(grid,True,True,6)
         widgets, pos, shift = [], [1,0], [False]
@@ -1918,7 +2026,7 @@ class TVWindow(Gtk.Window):
             widgets.append([])
             for ci,key_name in enumerate(row):
                 button = Gtk.Button(label=key_name)
-                button.set_size_request(45 if len(key_name)==1 else 74,40)
+                button.set_size_request(px(45 if len(key_name)==1 else 74),px(40))
                 button.connect("clicked", lambda _b, v=key_name: press(v))
                 grid.attach(button,ci,ri,1,1)
                 widgets[-1].append(button)
@@ -1964,11 +2072,29 @@ class TVWindow(Gtk.Window):
 
     def _build_settings(self):
         self.settings_screen = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=8)
-        self.settings_screen.set_border_width(24)
+        scaled(lambda: (self.settings_screen.set_spacing(px(8)),
+                        self.settings_screen.set_border_width(px(24))))
         self.outer.pack_start(self.settings_screen,True,True,0)
         header=Gtk.Label(label=" SETTINGS / WI-FI ",xalign=0)
         header.get_style_context().add_class("brand")
         self.settings_screen.pack_start(header,False,False,0)
+        size_row=Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,spacing=10)
+        size_row.get_style_context().add_class("settings-row")
+        self.size_row=size_row
+        size_row.pack_start(Gtk.Label(label="SCREEN SIZE  (LEFT / RIGHT):",xalign=0),False,False,0)
+        size_prev=Gtk.Button(label="◀")
+        size_prev.set_can_focus(False)
+        size_prev.connect("clicked",lambda *_:self.cycle_screen_size(-1))
+        size_row.pack_start(size_prev,False,False,0)
+        self.size_label=Gtk.Label(label=" %s "%scale_choice_label(self._scale_choice,screen_height_now()),xalign=0.5)
+        self.size_label.get_style_context().add_class("sound-value")
+        size_row.pack_start(self.size_label,False,False,0)
+        size_next=Gtk.Button(label="▶")
+        size_next.set_can_focus(False)
+        size_next.connect("clicked",lambda *_:self.cycle_screen_size(1))
+        size_row.pack_start(size_next,False,False,0)
+        self.settings_screen.pack_start(size_row,False,False,0)
+
         sound_row=Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,spacing=10)
         sound_row.get_style_context().add_class("settings-row")
         self.sound_row=sound_row
@@ -2051,6 +2177,7 @@ class TVWindow(Gtk.Window):
         self.remote_screen.pack_start(header, False, False, 0)
 
         body = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=40)
+        scaled(lambda: body.set_spacing(px(40)))
         body.set_halign(Gtk.Align.CENTER)
         body.set_valign(Gtk.Align.CENTER)
         self.remote_screen.pack_start(body, True, True, 0)
@@ -2063,6 +2190,7 @@ class TVWindow(Gtk.Window):
         body.pack_start(frame, False, False, 0)
 
         info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        scaled(lambda: info.set_spacing(px(14)))
         info.set_valign(Gtk.Align.CENTER)
         body.pack_start(info, False, False, 0)
         self.remote_steps = Gtk.Label(
@@ -2206,9 +2334,10 @@ class TVWindow(Gtk.Window):
 
     # ---------------- SETTINGS ROW CURSOR ----------------
     def _set_settings_row(self, row):
-        """sound / resolution / wifi - which row LEFT/RIGHT and OK act on."""
+        """size / sound / resolution / wifi - which row LEFT/RIGHT and OK act on."""
         self._settings_row = row
-        for name, box in (("sound", self.sound_row), ("resolution", self.res_row)):
+        for name, box in (("size", self.size_row), ("sound", self.sound_row),
+                          ("resolution", self.res_row)):
             ctx = box.get_style_context()
             if name == row:
                 ctx.add_class("settings-row-active")
@@ -2223,6 +2352,15 @@ class TVWindow(Gtk.Window):
             (target or self.wifi_list).grab_focus()
         else:
             self.grab_focus()
+
+    # ---------------- SCREEN SIZE ----------------
+    def cycle_screen_size(self, delta):
+        self._scale_choice = next_scale_choice(self._scale_choice, delta)
+        self._prefs["ui_scale"] = self._scale_choice
+        self._save_prefs()
+        height = screen_height_now(self)
+        self.size_label.set_text(" %s " % scale_choice_label(self._scale_choice, height))
+        self.apply_ui_scale(effective_scale(self._scale_choice, height))
 
     # ---------------- RESOLUTION ----------------
     def _res_job(self, work, done):
@@ -2341,9 +2479,42 @@ class TVWindow(Gtk.Window):
         self._res_job(lambda: set_mode(p["output"], p["previous"]), done)
 
     def _refit_window(self):
-        """After the screen size changes, make the TV fill the new screen."""
+        """After the screen size changes, make the TV fill the new screen
+        and resize its text/tiles to match (signals may arrive late or not
+        at all through XWayland, so check again ourselves)."""
         if self.window_full:
             GLib.timeout_add(700, lambda: (self.fullscreen(), False)[1])
+        for delay in (800, 2000):
+            GLib.timeout_add(delay, lambda: (self._schedule_rescale(), False)[1])
+
+    def _schedule_rescale(self):
+        if self._rescale_pending is None and not self._closed:
+            self._rescale_pending = GLib.timeout_add(300, self._rescale_now)
+
+    def _rescale_now(self):
+        self._rescale_pending = None
+        if self._closed:
+            return False
+        factor = effective_scale(self._scale_choice, screen_height_now(self))
+        if hasattr(self, "size_label"):
+            self.size_label.set_text(" %s " % scale_choice_label(
+                self._scale_choice, screen_height_now(self)))
+        if factor != UI_SCALE:
+            self.apply_ui_scale(factor)
+        return False
+
+    def apply_ui_scale(self, factor):
+        set_ui_scale(factor)
+        self._build_home_tiles()
+        if self.webview is not None:
+            try:
+                self.webview.set_zoom_level(factor)
+            except (AttributeError, TypeError):
+                pass
+        if self.screen == "REMOTE":
+            self.refresh_remote()
+        if self.window_full:
+            self.fullscreen()
 
     def _apply_saved_resolution(self):
         """At start-up: restore the resolution kept last time, if still offered."""
@@ -2622,24 +2793,25 @@ class TVWindow(Gtk.Window):
             if isinstance(self.get_focus(), Gtk.Entry):
                 return False
             row = self._settings_row
+            rows = ["size", "sound", "resolution", "wifi"]
             if key in (Gdk.KEY_Left, Gdk.KEY_Right):
                 step = 1 if key == Gdk.KEY_Right else -1
-                if row == "sound":
+                if row == "size":
+                    self.cycle_screen_size(step)
+                elif row == "sound":
                     self.cycle_sound_output(step)
                 elif row == "resolution":
                     self.cycle_resolution(step)
                 return True
             if key == Gdk.KEY_Down:
-                if row == "sound":
-                    self._set_settings_row("resolution")
-                elif row == "resolution":
-                    self._set_settings_row("wifi")
-                else:
+                if row == "wifi":
                     self._move_listbox(self.wifi_list, 1)
+                else:
+                    self._set_settings_row(rows[rows.index(row) + 1])
                 return True
             if key == Gdk.KEY_Up:
-                if row == "resolution":
-                    self._set_settings_row("sound")
+                if row in ("sound", "resolution"):
+                    self._set_settings_row(rows[rows.index(row) - 1])
                 elif row == "wifi":
                     selected = self.wifi_list.get_selected_row()
                     if selected is None or selected.get_index() == 0:
@@ -2779,10 +2951,11 @@ def main():
         print("  From SSH:       DISPLAY=:0 python3 tv.py")
         sys.exit(1)
 
-    provider = Gtk.CssProvider()
-    provider.load_from_data(CSS)
+    global _CSS_PROVIDER
+    _CSS_PROVIDER = Gtk.CssProvider()
     Gtk.StyleContext.add_provider_for_screen(
-        screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        screen, _CSS_PROVIDER, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    set_ui_scale(ui_scale_for(screen_height_now()))   # 720p=1x, 1080p=1.5x, 4K=3x
 
     win = TVWindow(path)
     win.show_all()

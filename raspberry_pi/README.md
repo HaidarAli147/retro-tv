@@ -243,3 +243,14 @@ it; BACK or waiting 15 seconds goes back to the old resolution, so a mode the
 monitor can't show never leaves you with a black screen. The kept choice is
 saved in `~/.config/retro-tv/preferences.json` and restored 3 seconds after the
 TV app starts. Lower resolutions make everything bigger but slightly softer.
+
+## Screen size (Settings)
+
+The TV app now **sizes itself to the screen**. It was designed for 720p, so
+by default (**SCREEN SIZE: AUTO**) it scales everything by screen height ÷ 720:
+1080p = 150%, 4K = 300%. The top row of Settings, **SCREEN SIZE**, lets you
+pick AUTO or a fixed 50% – 400% with LEFT / RIGHT; it changes instantly and is
+saved in `~/.config/retro-tv/preferences.json` (`"ui_scale"`). Text, tiles,
+lists, keyboards, the QR code, logos and web-app zoom all follow it, and it
+re-fits automatically when the screen resolution changes. SCREEN SIZE keeps
+the picture sharp; RESOLUTION (below it) changes the real HDMI mode.
