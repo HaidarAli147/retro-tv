@@ -12,7 +12,8 @@ How a phone gets control:
 
 Safety rules:
     - Runs as the normal desktop user, never root.
-    - Only answers phones with a local-network address (192.168.x.x etc.).
+    - Only answers phones with a local-network address (192.168.x.x etc.),
+      which includes phones on the TV's own hotspot (hotspot.py).
     - The code changes every time tv.py starts; 5 wrong codes per minute
       from one phone locks that phone out for the rest of the minute, and
       20 wrong codes from any phones in a minute makes a brand-new code.
@@ -244,15 +245,40 @@ def qr_matrix(text):
 
 
 def lan_ip():
-    """The Pi's address on the home network (no packet is actually sent)."""
+    """The Pi's address on the home network (no packet is actually sent).
+
+    On a network with no default route - the TV's own hotspot, for one - the
+    route trick fails, so the machine's real addresses are read instead."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.connect(("10.255.255.255", 1))
-        return sock.getsockname()[0]
+        found = sock.getsockname()[0]
+        if found and not found.startswith("127."):
+            return found
     except OSError:
-        return "127.0.0.1"
+        pass
     finally:
         sock.close()
+    return _interface_ip() or "127.0.0.1"
+
+
+def _interface_ip():
+    """First private IPv4 address of any network interface, or None."""
+    try:
+        out = subprocess.run(["ip", "-4", "-o", "addr", "show", "scope", "global"],
+                             capture_output=True, text=True, timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        for token in line.split():
+            if "/" in token:
+                try:
+                    addr = ipaddress.ip_interface(token).ip
+                except ValueError:
+                    continue
+                if addr.version == 4 and addr.is_private:
+                    return str(addr)
+    return None
 
 
 def set_volume(action):
@@ -380,6 +406,7 @@ class RemoteServer:
         self.ports = ports
         self.page_path = page_path
         self.pairing = Pairing()
+        self.host_override = None   # tv.py sets this while the TV's own hotspot is on
         self.port = None
         self._httpd = None
         self._thread = None
@@ -418,7 +445,7 @@ class RemoteServer:
             close()
 
     def url(self):
-        return "http://%s:%d/" % (lan_ip(), self.port)
+        return "http://%s:%d/" % (self.host_override or lan_ip(), self.port)
 
     def qr_link(self):
         return self.url() + "#code=" + self.pairing.code

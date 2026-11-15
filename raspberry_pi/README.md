@@ -221,6 +221,46 @@ different phones makes a new code (the TV redraws the QR); paired phones
 keep working. The REMOTE screen says
 "KEYS/MOUSE OFF" if the uinput permission is missing; volume still works then.
 
+## Phone remote without Wi-Fi: the TV's own hotspot
+
+If the TV has no network (no Wi-Fi, no cable), the TV can make its own Wi-Fi,
+**RetroTV-XXXX**, so a phone can still connect. The PHONE REMOTE screen then
+shows **two QR codes**: the left one joins that Wi-Fi in one tap, the right one
+opens the remote (same page and 6-digit code as before). The name and password
+are also written under the left code.
+
+When it starts (Settings, row **HOTSPOT**, LEFT/RIGHT to change):
+
+| Setting | What happens |
+|---|---|
+| **AUTO (NO NETWORK)** (default) | Starts after 30 s with no Wi-Fi network and no cable. Never while you are in Settings (you may be typing a Wi-Fi password). Switches off again if a cable is plugged in. |
+| **ALWAYS ON** | Hotspot stays on (useful when the router blocks phones from talking to the TV). |
+| **OFF** | Never. A hotspot made by the TV is switched off. |
+
+Things to know:
+
+* The Pi has **one Wi-Fi radio**. While the hotspot is on the TV is not on a Wi-Fi
+  network, so channels that need the internet will not play (a network cable
+  keeps working). To go back: open **Settings** and scan/connect to your Wi-Fi - the
+  hotspot is switched off first, automatically.
+* The password is random, made once and kept in `~/.config/retro-tv/hotspot.json`
+  (only you can read it), so a phone that joined before reconnects without scanning.
+* It needs NetworkManager (`nmcli`), the default on Raspberry Pi OS and Debian
+  desktops, and a Wi-Fi adapter that can host a hotspot. If it cannot start, the
+  REMOTE screen says why in plain words (for example: set the Wi-Fi country with
+  `sudo raspi-config` if Wi-Fi is switched off). After a failed start it waits
+  2 minutes before trying again.
+* The files are `hotspot.py` (next to `tv.py`; `bash install_remote.sh` copies it) and
+  nothing else. Without it the TV works exactly as before and the Settings row says
+  NOT AVAILABLE.
+* Checks: `python3 -m unittest tests.test_hotspot -v` (no Wi-Fi or display needed).
+  **Not tested on real Wi-Fi hardware yet**: try it on the PC first (its adapter must support
+  hotspot/AP mode), then the Pi.
+
+Manual test without waiting: set HOTSPOT to **ALWAYS ON**, wait ~5 s, look for
+`RetroTV-XXXX` on your phone. Check from a terminal: `nmcli connection show --active`.
+Switch off: set HOTSPOT to **OFF**, or `nmcli connection down RetroTV-Hotspot`.
+
 ## Sound output (Settings)
 
 Settings now has **SOUND OUTPUT** at the top. Press **LEFT / RIGHT** (joystick,

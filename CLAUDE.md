@@ -17,5 +17,6 @@ related change, and commit + push log-only updates too.
 - Raspberry Pi software and diagnostics: `raspberry_pi/`.
 - Current Uno firmware: `arduino/rpi_controller_final/rpi_controller_final.ino`.
 - Keep `raspberry_pi/tv.py` and the embedded source in `raspberry_pi/install_tv.sh` consistent.
+- Phone remote files live together: `tv.py`, `remote_server.py`, `remote_page.html`, `hotspot.py` (`install_remote.sh` copies all four).
 - Historical archives and old log paths are not active installation sources.
 - Direct main updates were authorized once for the platform-folder reorganization only; subsequent work uses the user's branch workflow.

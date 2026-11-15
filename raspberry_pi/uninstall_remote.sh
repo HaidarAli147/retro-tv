@@ -15,7 +15,9 @@ else
     echo "no backup found at $HOME/tv.py.before-phone-remote - tv.py left as is"
 fi
 
-rm -f "$HOME/remote_server.py" "$HOME/remote_page.html"
+rm -f "$HOME/remote_server.py" "$HOME/remote_page.html" "$HOME/hotspot.py"
+rm -f "$HOME/.config/retro-tv/hotspot.json"
+nmcli connection delete RetroTV-Hotspot >/dev/null 2>&1 || true
 sudo rm -f /etc/udev/rules.d/60-retro-tv-uinput.rules
 sudo udevadm control --reload-rules
 sudo udevadm trigger --name-match=uinput || true

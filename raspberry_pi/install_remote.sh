@@ -6,7 +6,8 @@
 # What it does:
 #   1. Backs up your current ~/tv.py to ~/tv.py.before-phone-remote (once)
 #   2. Installs python3-qrcode (QR code) and wlr-randr (RESOLUTION setting)
-#   3. Copies tv.py, remote_server.py and remote_page.html to your home folder
+#   3. Copies tv.py, remote_server.py, remote_page.html and hotspot.py to your home folder
+#      (hotspot.py = the TV's own Wi-Fi when there is no network; needs NetworkManager)
 #   4. Lets the logged-in desktop user create a virtual keyboard/mouse
 #      (/dev/uinput) - the same kind of rule Steam uses for controllers
 #
@@ -19,10 +20,10 @@ if [ "$(id -u)" -eq 0 ]; then
     echo "Run this as your normal user, not with sudo." >&2
     exit 1
 fi
-for f in tv.py remote_server.py remote_page.html; do
+for f in tv.py remote_server.py remote_page.html hotspot.py; do
     [ -f "$f" ] || { echo "Missing $f next to this script." >&2; exit 1; }
 done
-python3 -m py_compile tv.py remote_server.py
+python3 -m py_compile tv.py remote_server.py hotspot.py
 
 echo "== 1/4 Backing up your current tv.py =="
 if [ -f "$HOME/tv.py" ] && [ ! -f "$HOME/tv.py.before-phone-remote" ]; then
@@ -36,8 +37,12 @@ echo "== 2/4 Installing python3-qrcode and wlr-randr =="
 sudo apt install -y python3-qrcode wlr-randr
 
 echo "== 3/4 Copying the remote files =="
-cp tv.py remote_server.py remote_page.html "$HOME/"
+cp tv.py remote_server.py remote_page.html hotspot.py "$HOME/"
 chmod +x "$HOME/tv.py"
+
+if ! command -v nmcli >/dev/null 2>&1; then
+    echo "NOTE: NetworkManager (nmcli) was not found: the TV hotspot backup will say NOT AVAILABLE."
+fi
 
 echo "== 4/4 Allowing the virtual keyboard/mouse =="
 # "uaccess" gives access only to whoever is logged in at the Pi's screen,

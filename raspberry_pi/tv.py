@@ -63,6 +63,13 @@ try:
 except Exception:  # missing file or a broken copy must never stop the TV
     remote_server = None
 
+# The TV's own Wi-Fi hotspot (for the phone remote when there is no network).
+# Optional like the remote itself: without the file the TV just has no hotspot.
+try:
+    import hotspot
+except Exception:
+    hotspot = None
+
 DEFAULT_PLAYLIST = os.path.expanduser("~/channels.m3u")
 if not os.path.exists(DEFAULT_PLAYLIST):
     # No copy in the home folder: use the one sitting next to this script.
@@ -1187,6 +1194,7 @@ class TVWindow(Gtk.Window):
         self._build_settings()
         self._build_remote()
         self._apply_saved_sound_output()
+        self._init_hotspot()
         # Give the desktop a moment to finish its own screen setup first.
         GLib.timeout_add_seconds(3, self._apply_saved_resolution)
 
@@ -2135,6 +2143,21 @@ class TVWindow(Gtk.Window):
         self.res_keep.connect("clicked",lambda *_:self.keep_resolution())
         res_row.pack_start(self.res_keep,False,False,0)
         self.settings_screen.pack_start(res_row,False,False,0)
+        self.hs_row=Gtk.Box(spacing=12)
+        self.hs_row.set_name("settings-hotspot-row")
+        self.hs_row.pack_start(Gtk.Label(label="HOTSPOT  (LEFT / RIGHT):",xalign=0),False,False,0)
+        hs_prev=Gtk.Button(label="◀")
+        hs_prev.set_can_focus(False)
+        hs_prev.connect("clicked",lambda *_:self.cycle_hotspot_mode(-1))
+        self.hs_row.pack_start(hs_prev,False,False,0)
+        self.hs_label=Gtk.Label(label="",xalign=0.5)
+        self.hs_label.get_style_context().add_class("sound-value")
+        self.hs_row.pack_start(self.hs_label,False,False,0)
+        hs_next=Gtk.Button(label="▶")
+        hs_next.set_can_focus(False)
+        hs_next.connect("clicked",lambda *_:self.cycle_hotspot_mode(1))
+        self.hs_row.pack_start(hs_next,False,False,0)
+        self.settings_screen.pack_start(self.hs_row,False,False,0)
         self._res_output=None
         self._res_modes=[]
         self._res_busy=False
@@ -2167,6 +2190,129 @@ class TVWindow(Gtk.Window):
         self._networks=[]
 
     # ================================================================
+    #  HOTSPOT - the TV's own Wi-Fi, so a phone can connect with no router
+    # ================================================================
+    def _init_hotspot(self):
+        self._hs_mode = hotspot.clean_mode(self._prefs.get("hotspot", "auto")) if hotspot else "off"
+        self._hs_policy = hotspot.Policy() if hotspot else None
+        self._hs_active = False
+        self._hs_creds = None
+        self._hs_busy = False
+        self._hs_force = False
+        self._hs_message = ""
+        self._hs_workers = ThreadPoolExecutor(max_workers=1)
+        self._show_hotspot_mode()
+        if hotspot is not None and self.remote is not None and not IS_WINDOWS:
+            GLib.timeout_add_seconds(5, self._hotspot_tick)
+
+    def _show_hotspot_mode(self):
+        if hotspot is None or self.remote is None or IS_WINDOWS:
+            self.hs_label.set_text(" NOT AVAILABLE ")
+            return
+        self.hs_label.set_text(" %s " % hotspot.MODE_LABELS[self._hs_mode])
+
+    def cycle_hotspot_mode(self, step):
+        if hotspot is None or self.remote is None or IS_WINDOWS:
+            return
+        modes = hotspot.MODES
+        self._hs_mode = modes[(modes.index(self._hs_mode) + step) % len(modes)]
+        self._prefs["hotspot"] = self._hs_mode
+        self._save_prefs()
+        self._hs_message = ""
+        self._hs_force = True            # act on the new choice at once, even in Settings
+        self._show_hotspot_mode()
+        self._hotspot_tick()
+
+    def _hotspot_tick(self):
+        """Every 5 s: look at the network off the screen thread, then decide."""
+        if self._closed:
+            return False
+        if self._hs_busy:
+            return True
+        self._hs_busy = True
+        def observe():
+            rows = hotspot.devices()
+            # known is False when NetworkManager gave no answer at all (not
+            # installed, or this machine uses something else): then do nothing.
+            return hotspot.has_network(rows), hotspot.is_active(rows), bool(rows)
+        task = self._hs_workers.submit(observe)
+        task.add_done_callback(lambda t: GLib.idle_add(self._hotspot_decide, t)
+                               if not self._closed else None)
+        return True
+
+    def _hotspot_decide(self, task):
+        try:
+            network, active, known = task.result()
+        except Exception:
+            self._hs_busy = False
+            return False
+        if not known:
+            self._hs_busy = False
+            return False
+        changed = active != self._hs_active
+        self._hs_active = active
+        if changed and not active and self.remote is not None:
+            self.remote.host_override = None      # someone else switched it off
+        force, self._hs_force = self._hs_force, False
+        action = self._hs_policy.decide(
+            time.monotonic(), self._hs_mode, network, active,
+            suppress=(self.screen == "SETTINGS"), force=force)
+        if action == "start":
+            self._hotspot_run(True)
+        elif action == "stop":
+            self._hotspot_run(False)
+        else:
+            self._hs_busy = False
+            if changed:
+                self._hotspot_changed()
+        return False
+
+    def _hotspot_run(self, start):
+        def work():
+            if not start:
+                hotspot.stop()
+                return None
+            creds = hotspot.load_credentials()
+            ok, message = hotspot.start(creds)
+            adapter = hotspot.wifi_device()
+            addr = hotspot.address(adapter["device"]) if ok and adapter else None
+            return creds, ok, message, addr
+        def done(task):
+            try:
+                result = task.result()
+            except Exception:
+                result = None
+            if start and result is not None:
+                creds, ok, message, addr = result
+                self._hs_active = ok
+                if ok:
+                    self._hs_creds = creds
+                    self._hs_message = ""
+                    if self.remote is not None:
+                        self.remote.host_override = addr or "10.42.0.1"
+                    self._hs_policy.reset()
+                else:
+                    self._hs_message = message
+                    self._hs_policy.failed(time.monotonic())
+            elif start:
+                self._hs_message = "HOTSPOT FAILED"
+                self._hs_policy.failed(time.monotonic())
+            else:
+                self._hs_active = False
+                self._hs_policy.reset()
+                if self.remote is not None:
+                    self.remote.host_override = None
+            self._hs_busy = False
+            self._hotspot_changed()
+            return False
+        task = self._hs_workers.submit(work)
+        task.add_done_callback(lambda t: GLib.idle_add(done, t) if not self._closed else None)
+
+    def _hotspot_changed(self):
+        if self.remote is not None and not self._closed:
+            self.refresh_remote()
+
+    # ================================================================
     #  REMOTE - QR code so a phone on the same Wi-Fi becomes a remote
     # ================================================================
     def _build_remote(self):
@@ -2181,6 +2327,23 @@ class TVWindow(Gtk.Window):
         body.set_halign(Gtk.Align.CENTER)
         body.set_valign(Gtk.Align.CENTER)
         self.remote_screen.pack_start(body, True, True, 0)
+
+        # Only while the TV's own hotspot is on: a QR code that joins that Wi-Fi.
+        self.remote_wifi_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.remote_wifi_box.set_valign(Gtk.Align.CENTER)
+        self.remote_wifi_box.set_no_show_all(True)
+        wifi_title = Gtk.Label(label="1. JOIN THIS WI-FI")
+        wifi_title.get_style_context().add_class("remote-info")
+        self.remote_wifi_box.pack_start(wifi_title, False, False, 0)
+        wifi_frame = Gtk.Box()
+        wifi_frame.get_style_context().add_class("qr-frame")
+        self.remote_wifi_qr = Gtk.Image()
+        wifi_frame.pack_start(self.remote_wifi_qr, False, False, 0)
+        self.remote_wifi_box.pack_start(wifi_frame, False, False, 0)
+        self.remote_wifi_info = Gtk.Label(label="")
+        self.remote_wifi_info.get_style_context().add_class("remote-info")
+        self.remote_wifi_box.pack_start(self.remote_wifi_info, False, False, 0)
+        body.pack_start(self.remote_wifi_box, False, False, 0)
 
         frame = Gtk.Box()
         frame.get_style_context().add_class("qr-frame")
@@ -2228,11 +2391,36 @@ class TVWindow(Gtk.Window):
                 "(bash install_remote.sh) AND RESTART THE TV.")
             return
         link = self.remote.qr_link()
-        pixbuf = qr_pixbuf(link)
+        hs = bool(self._hs_active and self._hs_creds)
+        size = px(250) if hs else None          # two QR codes have to fit side by side
+        pixbuf = qr_pixbuf(link, size)
         if pixbuf is None:
             self.remote_qr.clear()
         else:
             self.remote_qr.set_from_pixbuf(pixbuf)
+        if hs:
+            wifi_pix = qr_pixbuf(hotspot.wifi_qr_text(
+                self._hs_creds["ssid"], self._hs_creds["password"]), size)
+            if wifi_pix is None:
+                self.remote_wifi_qr.clear()
+            else:
+                self.remote_wifi_qr.set_from_pixbuf(wifi_pix)
+            self.remote_wifi_info.set_text("WI-FI:  %s\nPASSWORD:  %s" % (
+                self._hs_creds["ssid"], self._hs_creds["password"]))
+            self.remote_steps.set_text("1. JOIN THE TV'S WI-FI (LEFT QR)\n"
+                                       "2. SCAN THE RIGHT QR CODE\n"
+                                       "3. OR OPEN THE ADDRESS, TYPE THE CODE")
+        else:
+            self.remote_steps.set_text("1. CONNECT YOUR PHONE TO THIS WI-FI\n"
+                                       "2. SCAN THE QR CODE WITH THE CAMERA\n"
+                                       "3. OR OPEN THE ADDRESS AND TYPE THE CODE")
+        if hs:
+            # show_all() skips a widget flagged no_show_all, so lift the flag for the call.
+            self.remote_wifi_box.set_no_show_all(False)
+            self.remote_wifi_box.show_all()
+            self.remote_wifi_box.set_no_show_all(True)
+        else:
+            self.remote_wifi_box.hide()
         self.remote_url.set_text("ADDRESS:  " + self.remote.url())
         self.remote_code.set_text(self.remote.pairing.code)
         self._remote_status()
@@ -2247,6 +2435,13 @@ class TVWindow(Gtk.Window):
             lines.append("NOT ON WI-FI: CONNECT THE TV TO WI-FI FIRST")
         if self.remote_qr.get_pixbuf() is None:
             lines.append("NO QR PICTURE: sudo apt install python3-qrcode")
+        if self._hs_active:
+            lines.append("TV IS ON ITS OWN WI-FI: NO INTERNET UNTIL YOU JOIN A WI-FI IN SETTINGS")
+        elif self._hs_message:
+            lines.append(self._hs_message)
+        elif hotspot is not None and self._hs_mode == "auto" and \
+                "127.0.0.1" in self.remote_url.get_text():
+            lines.append("NO NETWORK: THE TV WILL START ITS OWN WI-FI IN A MOMENT")
         if not getattr(self.remote.input, "available", False):
             lines.append("KEYS/MOUSE OFF: run install_remote.sh, then reboot")
         self.remote_status.set_text("\n".join(lines))
@@ -2334,10 +2529,10 @@ class TVWindow(Gtk.Window):
 
     # ---------------- SETTINGS ROW CURSOR ----------------
     def _set_settings_row(self, row):
-        """size / sound / resolution / wifi - which row LEFT/RIGHT and OK act on."""
+        """size / sound / resolution / hotspot / wifi - which row LEFT/RIGHT and OK act on."""
         self._settings_row = row
         for name, box in (("size", self.size_row), ("sound", self.sound_row),
-                          ("resolution", self.res_row)):
+                          ("resolution", self.res_row), ("hotspot", self.hs_row)):
             ctx = box.get_style_context()
             if name == row:
                 ctx.add_class("settings-row-active")
@@ -2536,6 +2731,10 @@ class TVWindow(Gtk.Window):
 
     def _wifi_job(self,args,callback):
         def work():
+            if hotspot is not None and self._hs_active:
+                # One Wi-Fi radio: the hotspot has to go before a network can be joined.
+                hotspot.stop()
+                self._hs_active=False
             try:
                 return subprocess.run(args,capture_output=True,text=True,timeout=35)
             except (OSError,subprocess.TimeoutExpired) as exc:
@@ -2793,7 +2992,7 @@ class TVWindow(Gtk.Window):
             if isinstance(self.get_focus(), Gtk.Entry):
                 return False
             row = self._settings_row
-            rows = ["size", "sound", "resolution", "wifi"]
+            rows = ["size", "sound", "resolution", "hotspot", "wifi"]
             if key in (Gdk.KEY_Left, Gdk.KEY_Right):
                 step = 1 if key == Gdk.KEY_Right else -1
                 if row == "size":
@@ -2802,6 +3001,8 @@ class TVWindow(Gtk.Window):
                     self.cycle_sound_output(step)
                 elif row == "resolution":
                     self.cycle_resolution(step)
+                elif row == "hotspot":
+                    self.cycle_hotspot_mode(step)
                 return True
             if key == Gdk.KEY_Down:
                 if row == "wifi":
@@ -2810,12 +3011,12 @@ class TVWindow(Gtk.Window):
                     self._set_settings_row(rows[rows.index(row) + 1])
                 return True
             if key == Gdk.KEY_Up:
-                if row in ("sound", "resolution"):
+                if row in ("sound", "resolution", "hotspot"):
                     self._set_settings_row(rows[rows.index(row) - 1])
                 elif row == "wifi":
                     selected = self.wifi_list.get_selected_row()
                     if selected is None or selected.get_index() == 0:
-                        self._set_settings_row("resolution")
+                        self._set_settings_row("hotspot")
                     else:
                         self._move_listbox(self.wifi_list, -1)
                 return True
@@ -2926,6 +3127,9 @@ class TVWindow(Gtk.Window):
 
     def on_destroy(self, *_):
         self._closed = True
+        if hotspot is not None and self._hs_active:
+            threading.Thread(target=hotspot.stop).start()   # leave the radio as we found it
+        self._hs_workers.shutdown(wait=False, cancel_futures=True)
         if self._volume_timer is not None:
             GLib.source_remove(self._volume_timer)
         if self.remote is not None:
