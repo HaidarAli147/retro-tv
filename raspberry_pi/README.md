@@ -223,39 +223,64 @@ keep working. The REMOTE screen says
 
 ## Phone remote without Wi-Fi: the TV's own hotspot
 
-If the TV has no network (no Wi-Fi, no cable), the TV can make its own Wi-Fi,
-**RetroTV-XXXX**, so a phone can still connect. The PHONE REMOTE screen then
-shows **two QR codes**: the left one joins that Wi-Fi in one tap, the right one
-opens the remote (same page and 6-digit code as before). The name and password
-are also written under the left code.
+The TV can make its own Wi-Fi, **RetroTV-XXXX**, so a phone can connect even when
+the TV has no network - and, with the one-time setup below, **at the same time as
+your normal Wi-Fi**, so the TV keeps its internet.
 
-When it starts (Settings, row **HOTSPOT**, LEFT/RIGHT to change):
+### The pop-up
+Whenever **no phone is connected**, a pop-up appears in the top-right corner of
+the TV (on any screen, over the video too) with the **Wi-Fi name**, the
+**password**, the **address** and the 6-digit **code**.
 
-| Setting | What happens |
-|---|---|
-| **AUTO (NO NETWORK)** (default) | Starts after 30 s with no Wi-Fi network and no cable. Never while you are in Settings (you may be typing a Wi-Fi password). Switches off again if a cable is plugged in. |
-| **ALWAYS ON** | Hotspot stays on (useful when the router blocks phones from talking to the TV). |
-| **OFF** | Never. A hotspot made by the TV is switched off. |
+* It disappears **when you press BACK** (joystick hold / Esc), or **as soon as a
+  phone connects** (pairs with the code).
+* After BACK it stays hidden until a phone has connected; if that phone later
+  goes quiet (page closed, screen locked for 2 minutes) it comes back.
+* It is not shown on the PHONE REMOTE screen itself (that shows the same thing in
+  full, with QR codes), and not when HOTSPOT is OFF.
+* The phone page checks in every 15 s while it is open - that is how the TV
+  knows a phone is still connected.
 
-Things to know:
+### Both at once (hotspot + your Wi-Fi): one-time setup
+A Wi-Fi chip normally does one job at a time. Many chips can do both if they are
+given a second, virtual Wi-Fi interface. Run once, as your normal user:
 
-* The Pi has **one Wi-Fi radio**. While the hotspot is on the TV is not on a Wi-Fi
-  network, so channels that need the internet will not play (a network cable
-  keeps working). To go back: open **Settings** and scan/connect to your Wi-Fi - the
-  hotspot is switched off first, automatically.
+    bash install_hotspot_concurrent.sh
+
+It asks the adapter whether it supports hotspot + normal Wi-Fi together (and
+changes nothing if not), installs `iw`, creates the interface `ap0`, and adds one
+udev rule so it returns after reboot. This is the only step that needs `sudo`.
+Undo: `bash install_hotspot_concurrent.sh --remove`. Then restart the TV app.
+
+The hotspot runs on the **same channel** as your Wi-Fi (the chip can only use one
+at a time); if your router changes channel, restart the TV app.
+
+### HOTSPOT setting (Settings, LEFT / RIGHT)
+| Setting | With `ap0` (both at once) | Without `ap0` (one radio) |
+|---|---|---|
+| **AUTO** (default) | Hotspot always on, beside your Wi-Fi. | Starts after 30 s with no Wi-Fi network and no cable; never while you are in Settings; off again when a cable appears. |
+| **ALWAYS ON** | Same as AUTO. | Hotspot stays on and the TV is **not** on Wi-Fi (a cable keeps working). Joining a Wi-Fi in Settings switches it off first. |
+| **OFF** | Never, and no pop-up. | Never, and no pop-up. |
+
+Without `ap0` the REMOTE screen says "HOTSPOT WAITS: ONE WI-FI RADIO. TO RUN BOTH:
+bash install_hotspot_concurrent.sh" when you are on Wi-Fi.
+
+### Things to know
 * The password is random, made once and kept in `~/.config/retro-tv/hotspot.json`
   (only you can read it), so a phone that joined before reconnects without scanning.
-* It needs NetworkManager (`nmcli`), the default on Raspberry Pi OS and Debian
-  desktops, and a Wi-Fi adapter that can host a hotspot. If it cannot start, the
-  REMOTE screen says why in plain words (for example: set the Wi-Fi country with
+  Anyone who can see the TV screen sees the password while the pop-up is up.
+* Needs NetworkManager (`nmcli`), the default on Raspberry Pi OS and Debian desktops,
+  and a Wi-Fi adapter that can host a hotspot. If it cannot start, the REMOTE screen
+  says why in plain words (for example: set the Wi-Fi country with
   `sudo raspi-config` if Wi-Fi is switched off). After a failed start it waits
   2 minutes before trying again.
-* The files are `hotspot.py` (next to `tv.py`; `bash install_remote.sh` copies it) and
-  nothing else. Without it the TV works exactly as before and the Settings row says
-  NOT AVAILABLE.
+* Phones on the hotspot reach the TV at `10.42.0.1`; with both at once the hotspot
+  also gives them internet through the TV's Wi-Fi.
+* Files: `hotspot.py` (next to `tv.py`; `bash install_remote.sh` copies it) and
+  `install_hotspot_concurrent.sh`. Without `hotspot.py` the TV works exactly as before.
 * Checks: `python3 -m unittest tests.test_hotspot -v` (no Wi-Fi or display needed).
-  **Not tested on real Wi-Fi hardware yet**: try it on the PC first (its adapter must support
-  hotspot/AP mode), then the Pi.
+  **Check on your hardware**: single-radio mode worked on a Debian PC; the both-at-once
+  mode and the pop-up have been run only against a fake NetworkManager so far.
 
 Manual test without waiting: set HOTSPOT to **ALWAYS ON**, wait ~5 s, look for
 `RetroTV-XXXX` on your phone. Check from a terminal: `nmcli connection show --active`.

@@ -21,14 +21,18 @@ import tv
 HOME_WIFI = "wlan0:wifi:connected:Home Wi-Fi\n" "eth0:ethernet:unavailable:\n" "lo:loopback:unmanaged:\n"
 NO_NETWORK = "wlan0:wifi:disconnected:\n" "eth0:ethernet:unavailable:\n" "lo:loopback:unmanaged:\n"
 HOTSPOT_UP = "wlan0:wifi:connected:RetroTV-Hotspot\n" "eth0:ethernet:unavailable:\n"
+BOTH_READY = "wlp3s0:wifi:connected:Home Wi-Fi\n" "ap0:wifi:disconnected:\n" "lo:loopback:unmanaged:\n"
+BOTH_RUNNING = "wlp3s0:wifi:connected:Home Wi-Fi\n" "ap0:wifi:connected:RetroTV-Hotspot\n"
+AP0_UNMANAGED = "wlp3s0:wifi:connected:Home Wi-Fi\n" "ap0:wifi:unmanaged:\n"
 CABLE = "wlan0:wifi:disconnected:\n" "eth0:ethernet:connected:Wired connection 1\n"
 
 
 class FakeNmcli:
     """Answers nmcli calls from a table and records every call."""
 
-    def __init__(self, devices=NO_NETWORK, ap="yes", fail=()):
+    def __init__(self, devices=NO_NETWORK, ap="yes", fail=(), wifi_list="*:6:2437 MHz\n :11:2462 MHz\n"):
         self.devices_out, self.ap, self.fail, self.calls = devices, ap, set(fail), []
+        self.wifi_list = wifi_list
 
     def __call__(self, args, timeout=20):
         args = list(args)
@@ -38,6 +42,8 @@ class FakeNmcli:
                 return 1, "", "Error: simulated failure of %s" % word
         if args[:3] == ["-t", "-f", "DEVICE,TYPE,STATE,CONNECTION"]:
             return 0, self.devices_out, ""
+        if args[:3] == ["-t", "-f", "IN-USE,CHAN,FREQ"]:
+            return 0, self.wifi_list, ""
         if "WIFI-PROPERTIES.AP" in args:
             return 0, self.ap + "\n", ""
         if "IP4.ADDRESS" in args:
@@ -302,6 +308,234 @@ class RemoteAddressTests(unittest.TestCase):
         self.assertTrue(rs.is_local_host_header("10.42.0.1:8080"))
 
 
+class ConcurrentTests(unittest.TestCase):
+    CREDS = {"ssid": "RetroTV-AB23", "password": "PASS1234XY"}
+
+    def test_ap0_is_found_and_the_normal_adapter_is_not_confused_with_it(self):
+        with patch.object(hs, "_nmcli", FakeNmcli(BOTH_READY)):
+            rows = hs.devices()
+            self.assertEqual(hs.ap_device(rows), "ap0")
+            self.assertEqual(hs.wifi_device(rows)["device"], "wlp3s0")        # ap0 is never the main adapter
+            self.assertEqual(hs.station(rows), {"device": "wlp3s0", "connection": "Home Wi-Fi"})
+            self.assertIsNone(hs.active_device(rows))
+        with patch.object(hs, "_nmcli", FakeNmcli(AP0_UNMANAGED)):
+            self.assertIsNone(hs.ap_device())                                   # unusable: fall back to one radio
+        with patch.object(hs, "_nmcli", FakeNmcli(HOME_WIFI)):
+            self.assertIsNone(hs.ap_device())
+
+    def test_running_on_ap0_counts_as_both_and_the_home_wifi_still_counts_as_network(self):
+        with patch.object(hs, "_nmcli", FakeNmcli(BOTH_RUNNING)):
+            rows = hs.devices()
+            self.assertEqual(hs.active_device(rows), "ap0")
+            self.assertTrue(hs.is_active(rows))
+            self.assertTrue(hs.has_network(rows))
+            self.assertEqual(hs.station(rows)["device"], "wlp3s0")
+
+    def test_channel_of_the_normal_connection(self):
+        with patch.object(hs, "_nmcli", FakeNmcli(wifi_list="*:6:2437 MHz\n :11:2462 MHz\n")):
+            self.assertEqual(hs.sta_channel("wlp3s0"), ("bg", 6))
+        with patch.object(hs, "_nmcli", FakeNmcli(wifi_list=" :1:2412 MHz\n*:36:5180 MHz\n")):
+            self.assertEqual(hs.sta_channel("wlp3s0"), ("a", 36))
+        with patch.object(hs, "_nmcli", FakeNmcli(wifi_list=" :1:2412 MHz\n")):
+            self.assertIsNone(hs.sta_channel("wlp3s0"))                         # not connected
+        with patch.object(hs, "_nmcli", FakeNmcli(wifi_list="*:oops:no\n")):
+            self.assertIsNone(hs.sta_channel("wlp3s0"))
+
+    def test_start_beside_wifi_uses_ap0_and_the_same_channel(self):
+        fake = FakeNmcli(BOTH_READY, wifi_list=" :1:2412 MHz\n*:44:5220 MHz\n")
+        with patch.object(hs, "_nmcli", fake):
+            ok, message = hs.start(self.CREDS)
+        self.assertTrue(ok)
+        add = next(c for c in fake.calls if c[:2] == ["connection", "add"])
+        pairs = dict(zip(add[2::2], add[3::2]))
+        self.assertEqual(pairs["ifname"], "ap0")                                # not the adapter that carries the Wi-Fi
+        self.assertEqual(pairs["802-11-wireless.band"], "a")
+        self.assertEqual(pairs["802-11-wireless.channel"], "44")                # must match the Wi-Fi's channel
+        self.assertEqual(pairs["wifi-sec.key-mgmt"], "wpa-psk")
+        self.assertNotIn(["connection", "down", "Home Wi-Fi"], fake.calls)      # the normal Wi-Fi is left alone
+
+    def test_start_on_ap0_without_a_connected_wifi_uses_default_band(self):
+        fake = FakeNmcli("wlp3s0:wifi:disconnected:\n" "ap0:wifi:disconnected:\n")
+        with patch.object(hs, "_nmcli", fake):
+            self.assertTrue(hs.start(self.CREDS)[0])
+        add = next(c for c in fake.calls if c[:2] == ["connection", "add"])
+        pairs = dict(zip(add[2::2], add[3::2]))
+        self.assertEqual((pairs["ifname"], pairs["802-11-wireless.band"]), ("ap0", "bg"))
+        self.assertNotIn("802-11-wireless.channel", pairs)
+
+    def test_without_ap0_it_is_still_the_single_radio_mode(self):
+        fake = FakeNmcli(NO_NETWORK)
+        with patch.object(hs, "_nmcli", fake):
+            self.assertTrue(hs.start(self.CREDS)[0])
+        add = next(c for c in fake.calls if c[:2] == ["connection", "add"])
+        self.assertEqual(dict(zip(add[2::2], add[3::2]))["ifname"], "wlan0")
+
+    def test_policy_with_ap0_keeps_the_hotspot_on_whatever_the_network_does(self):
+        p = hs.Policy(grace=30)
+        self.assertEqual(p.decide(0, "auto", network=True, active=False, concurrent=True), "start")
+        self.assertIsNone(p.decide(1, "auto", network=True, active=True, concurrent=True))
+        self.assertIsNone(p.decide(2, "auto", network=False, active=True, concurrent=True))   # no stop for a cable either
+        self.assertEqual(p.decide(3, "auto", network=True, active=False, suppress=True, concurrent=True), "start")  # Settings need not pause it
+        self.assertEqual(p.decide(4, "off", network=True, active=True, concurrent=True), "stop")
+        self.assertIsNone(p.decide(5, "off", network=True, active=False, concurrent=True))
+
+    def test_policy_with_ap0_still_backs_off_after_a_failure(self):
+        p = hs.Policy(retry=120)
+        p.failed(0)
+        self.assertIsNone(p.decide(10, "auto", True, False, concurrent=True))
+        self.assertEqual(p.decide(130, "auto", True, False, concurrent=True), "start")
+
+    def test_without_ap0_auto_is_unchanged(self):
+        p = hs.Policy(grace=30)
+        self.assertIsNone(p.decide(0, "auto", network=True, active=False, concurrent=False))
+        self.assertEqual(p.decide(1, "auto", network=True, active=True, concurrent=False), "stop")
+
+
+class DeviceTrackingTests(unittest.TestCase):
+    def test_phones_count_while_they_keep_checking_in(self):
+        clock = [0.0]
+        p = rs.Pairing(code="123456", clock=lambda: clock[0])
+        self.assertEqual(p.active(120), 0)
+        token = p.pair("10.42.0.5", "123456")
+        self.assertEqual(p.active(120), 1)
+        clock[0] = 100
+        self.assertEqual(p.active(120), 1)
+        clock[0] = 130
+        self.assertEqual(p.active(120), 0)                                       # quiet for too long
+        self.assertTrue(p.valid(token))                                          # the phone is back (heartbeat)
+        self.assertEqual(p.active(120), 1)
+
+    def test_wrong_tokens_never_count_and_old_tokens_are_forgotten(self):
+        clock = [0.0]
+        p = rs.Pairing(code="123456", clock=lambda: clock[0])
+        self.assertFalse(p.valid("nonsense"))
+        self.assertEqual(p.active(120), 0)
+        tokens = [p.pair("10.0.0.%d" % i, "123456") for i in range(rs.MAX_TOKENS + 5)]
+        self.assertEqual(p.count(), rs.MAX_TOKENS)
+        self.assertEqual(p.active(120), rs.MAX_TOKENS)
+        self.assertFalse(p.valid(tokens[0]))                                     # pushed out by newer phones
+        self.assertEqual(len(p._seen), rs.MAX_TOKENS)
+
+    def test_server_reports_connected_devices(self):
+        server = rs.RemoteServer(input_backend=SimpleNamespace(available=False))
+        self.assertEqual(server.connected_devices(), 0)
+        server.pairing.pair("10.0.0.2", server.pairing.code)
+        self.assertEqual(server.connected_devices(), 1)
+
+    def test_the_phone_page_sends_a_heartbeat(self):
+        page = (pathlib.Path(__file__).resolve().parents[1] / "raspberry_pi" / "remote_page.html").read_text()
+        self.assertIn("setInterval(heartbeat, 15000)", page)
+        self.assertIn("/api/status", page)
+
+
+class HintTests(unittest.TestCase):
+    def test_popup_does_not_reuse_the_bottom_bar_name(self):
+        # tv.py already has self.hint = the grey hint bar (a Label). A pop-up stored under
+        # that name was silently replaced by it and never appeared.
+        src = (pathlib.Path(__file__).resolve().parents[1] / "raspberry_pi" / "tv.py").read_text()
+        self.assertIn("self.connect_hint = RemoteHint()", src)
+        self.assertNotRegex(src, r"self\.hint\.(show_info|dismiss|destroy)\b")
+        self.assertEqual(src.count("self.hint = "), 1)
+
+    def test_when_the_popup_is_wanted(self):
+        w = lambda **k: tv.hint_wanted(**{**dict(has_hotspot=True, mode="auto", remote_running=True,
+                                                 screen="HOME", connected=0, dismissed=False), **k})
+        self.assertTrue(w())
+        self.assertTrue(w(mode="on"))
+        self.assertTrue(w(screen="LIVE"))
+        self.assertFalse(w(mode="off"))                  # the user switched the hotspot feature off
+        self.assertFalse(w(screen="REMOTE"))             # that screen already shows everything
+        self.assertFalse(w(connected=1))                 # a phone is connected
+        self.assertFalse(w(dismissed=True))              # BACK was pressed
+        self.assertFalse(w(remote_running=False))
+        self.assertFalse(w(has_hotspot=False))
+
+    def make(self):
+        shown = []
+        class Hint:
+            visible = False
+            def get_visible(self): return self.visible
+            def show_info(self, wifi, address, code):
+                self.visible = True
+                shown.append((tuple(wifi), address, code))
+            def dismiss(self): self.visible = False
+        win = SimpleNamespace(
+            _closed=False, _hs_mode="auto", _hs_active=True, _hint_dismissed=False, _hint_key=None, _hs_known=True,
+            _hs_creds={"ssid": "RetroTV-AB23", "password": "PASS1234XY"}, screen="HOME",
+            remote=SimpleNamespace(connected_devices=lambda: win.connected, url=lambda: "http://10.42.0.1:8080/",
+                                   pairing=SimpleNamespace(code="123456")),
+            connect_hint=Hint(), connected=0)
+        return win, shown
+
+    def test_popup_shows_name_password_address_and_code(self):
+        win, shown = self.make()
+        tv.TVWindow._hint_update(win)
+        self.assertEqual(shown, [(("JOIN WI-FI:  RetroTV-AB23", "PASSWORD:    PASS1234XY"),
+                                  "http://10.42.0.1:8080/", "123456")])
+        tv.TVWindow._hint_update(win)
+        self.assertEqual(len(shown), 1)                  # no flicker: not re-shown when nothing changed
+
+    def test_popup_without_a_hotspot_still_gives_address_and_code(self):
+        win, shown = self.make()
+        win._hs_active = False
+        tv.TVWindow._hint_update(win)
+        self.assertEqual(shown[0][0], ())
+        self.assertEqual(shown[0][2], "123456")
+
+    def test_no_popup_where_networkmanager_is_missing(self):
+        win, shown = self.make()
+        win._hs_known = False                              # nmcli never answered: the hotspot cannot work here
+        tv.TVWindow._hint_update(win)
+        self.assertEqual(shown, [])
+
+    def test_decide_remembers_whether_networkmanager_answers(self):
+        events = []
+        win = SimpleNamespace(_closed=False, _hs_busy=True, _hs_known=True, _hs_active=False, _hs_mode="auto")
+        tv.TVWindow._hotspot_decide(win, SimpleNamespace(result=lambda: (False, False, False, False, None)))
+        self.assertFalse(win._hs_known)
+
+    def test_popup_follows_a_changed_code(self):
+        win, shown = self.make()
+        tv.TVWindow._hint_update(win)
+        win.remote.pairing.code = "654321"
+        tv.TVWindow._hint_update(win)
+        self.assertEqual([s[2] for s in shown], ["123456", "654321"])
+
+    def test_phone_connecting_hides_it_and_leaving_brings_it_back(self):
+        win, shown = self.make()
+        tv.TVWindow._hint_update(win)
+        self.assertTrue(win.connect_hint.visible)
+        win.connected = 1
+        tv.TVWindow._hint_update(win)
+        self.assertFalse(win.connect_hint.visible)
+        win.connected = 0                                 # phone went away
+        tv.TVWindow._hint_update(win)
+        self.assertTrue(win.connect_hint.visible)
+
+    def test_back_hides_it_until_a_phone_has_connected(self):
+        win, shown = self.make()
+        tv.TVWindow._hint_update(win)
+        win._hint_dismissed = True                        # what the BACK key does
+        win.connect_hint.dismiss()
+        for _ in range(3):
+            tv.TVWindow._hint_update(win)
+        self.assertFalse(win.connect_hint.visible)
+        win.connected = 1
+        tv.TVWindow._hint_update(win)
+        win.connected = 0
+        tv.TVWindow._hint_update(win)
+        self.assertTrue(win.connect_hint.visible)
+
+    def test_opening_the_remote_screen_counts_as_seen(self):
+        win, shown = self.make()
+        win.screen = "REMOTE"
+        tv.TVWindow._hint_update(win)
+        self.assertFalse(win.connect_hint.visible)
+        win.screen = "HOME"                               # they pressed BACK to leave it
+        tv.TVWindow._hint_update(win)
+        self.assertFalse(win.connect_hint.visible)
+
+
 class WindowLogicTests(unittest.TestCase):
     """The TVWindow methods run on a stand-in object: no display needed."""
 
@@ -310,6 +544,7 @@ class WindowLogicTests(unittest.TestCase):
         win = SimpleNamespace(
             _closed=False, _hs_mode=mode, _hs_active=False, _hs_force=False, _hs_message="x",
             _hs_busy=False, _hs_policy=hs.Policy(grace=0), _prefs={}, screen="HOME",
+            _hs_network=False, _hs_concurrent=False, _hs_concurrent_ok=False, _hint_dismissed=True, _hs_known=False,
             remote=SimpleNamespace(host_override="old"),
             hs_label=SimpleNamespace(set_text=lambda t: events.append(("label", t))),
             _save_prefs=lambda: events.append(("saved",)),
@@ -335,19 +570,19 @@ class WindowLogicTests(unittest.TestCase):
 
     def test_decision_starts_after_grace_and_stops_with_a_cable(self):
         win, events = self.make("auto")
-        done = SimpleNamespace(result=lambda: (False, False, True))
+        done = SimpleNamespace(result=lambda: (False, False, True, False, None))
         tv.TVWindow._hotspot_decide(win, done)                       # first sighting
         tv.TVWindow._hotspot_decide(win, done)                       # grace is 0
         self.assertIn(("run", True), events)
         win, events = self.make("auto")
         win._hs_active = True
-        tv.TVWindow._hotspot_decide(win, SimpleNamespace(result=lambda: (True, True, True)))
+        tv.TVWindow._hotspot_decide(win, SimpleNamespace(result=lambda: (True, True, True, False, "wlan0")))
         self.assertIn(("run", False), events)
 
     def test_settings_screen_blocks_an_automatic_start(self):
         win, events = self.make("auto")
         win.screen = "SETTINGS"
-        done = SimpleNamespace(result=lambda: (False, False, True))
+        done = SimpleNamespace(result=lambda: (False, False, True, False, None))
         for _ in range(3):
             tv.TVWindow._hotspot_decide(win, done)
         self.assertNotIn(("run", True), events)
@@ -355,7 +590,7 @@ class WindowLogicTests(unittest.TestCase):
     def test_someone_else_switching_it_off_clears_the_address(self):
         win, events = self.make("auto")
         win._hs_active = True
-        tv.TVWindow._hotspot_decide(win, SimpleNamespace(result=lambda: (False, False, True)))
+        tv.TVWindow._hotspot_decide(win, SimpleNamespace(result=lambda: (False, False, True, False, None)))
         self.assertIsNone(win.remote.host_override)
         self.assertIn(("changed",), events)
 
@@ -368,10 +603,25 @@ class WindowLogicTests(unittest.TestCase):
     def test_no_answer_from_networkmanager_means_do_nothing(self):
         win, events = self.make("auto")
         for _ in range(5):
-            tv.TVWindow._hotspot_decide(win, SimpleNamespace(result=lambda: (False, False, False)))
+            tv.TVWindow._hotspot_decide(win, SimpleNamespace(result=lambda: (False, False, False, False, None)))
         self.assertNotIn(("run", True), events)
         self.assertFalse(win._hs_busy)
         self.assertEqual(win._hs_message, "x")                       # and no new error shown
+
+    def test_with_ap0_the_hotspot_starts_even_though_wifi_is_connected(self):
+        win, events = self.make("auto")
+        tv.TVWindow._hotspot_decide(win, SimpleNamespace(result=lambda: (True, False, True, True, None)))
+        self.assertIn(("run", True), events)
+        self.assertTrue(win._hs_concurrent_ok)
+        self.assertTrue(win._hs_network)
+
+    def test_running_on_ap0_is_remembered_as_concurrent(self):
+        win, events = self.make("auto")
+        tv.TVWindow._hotspot_decide(win, SimpleNamespace(result=lambda: (True, True, True, True, "ap0")))
+        self.assertTrue(win._hs_concurrent)
+        self.assertNotIn(("run", False), events)                       # and it is left running
+        tv.TVWindow._hotspot_decide(win, SimpleNamespace(result=lambda: (True, True, True, False, "wlan0")))
+        self.assertFalse(win._hs_concurrent)
 
     def test_label_when_unavailable(self):
         win, events = self.make()
@@ -379,13 +629,26 @@ class WindowLogicTests(unittest.TestCase):
         tv.TVWindow._show_hotspot_mode(win)
         self.assertEqual(events[-1], ("label", " NOT AVAILABLE "))
 
+    def test_wifi_jobs_leave_a_hotspot_on_ap0_alone(self):
+        calls = []
+        class Pool:
+            def submit(self, fn):
+                calls.append(("worker", fn()))
+                return SimpleNamespace(add_done_callback=lambda cb: None)
+        win = SimpleNamespace(_closed=False, _hs_active=True, _hs_concurrent=True, _wifi_workers=Pool())
+        with patch.object(hs, "stop", lambda: calls.append(("hotspot stop",))), \
+                patch.object(tv.subprocess, "run", return_value=SimpleNamespace(returncode=0)):
+            tv.TVWindow._wifi_job(win, ["nmcli", "device", "wifi", "list"], lambda r: None)
+        self.assertNotIn(("hotspot stop",), calls)
+        self.assertTrue(win._hs_active)
+
     def test_wifi_jobs_give_the_radio_back_first(self):
         calls = []
         class Pool:
             def submit(self, fn):
                 calls.append(("worker", fn()))
                 return SimpleNamespace(add_done_callback=lambda cb: None)
-        win = SimpleNamespace(_closed=False, _hs_active=True, _wifi_workers=Pool())
+        win = SimpleNamespace(_closed=False, _hs_active=True, _hs_concurrent=False, _wifi_workers=Pool())
         with patch.object(hs, "stop", lambda: calls.append(("hotspot stop",))), \
                 patch.object(tv.subprocess, "run", return_value=SimpleNamespace(returncode=0)):
             tv.TVWindow._wifi_job(win, ["nmcli", "device", "wifi", "list"], lambda r: None)

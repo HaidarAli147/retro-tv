@@ -7,8 +7,13 @@ a QR code and then opens the usual phone-remote page. Needs NetworkManager
 (nmcli), which Raspberry Pi OS and Debian desktops already use. No root: the
 logged-in desktop user may create and start Wi-Fi connections.
 
-The Pi has ONE Wi-Fi radio: while the hotspot is on, the TV is not connected to
-a Wi-Fi network (a network cable keeps working). Use it for control and setup.
+Two ways to run, chosen automatically:
+
+* BOTH AT ONCE: if a second, virtual Wi-Fi interface "ap0" exists (made once by
+  install_hotspot_concurrent.sh, needs sudo), the hotspot runs on ap0 on the same
+  channel as the normal Wi-Fi connection, so the TV keeps its internet.
+* ONE RADIO (no ap0): the hotspot takes the only Wi-Fi radio, so the TV is not on a
+  Wi-Fi network while it runs (a cable keeps working). Used for control and setup.
 
 Everything here is plain Python with no GTK, so it can be tested offline: the
 only thing that touches the system is _nmcli().
@@ -20,11 +25,12 @@ import secrets
 import subprocess
 
 CONNECTION = "RetroTV-Hotspot"        # name of the NetworkManager profile
+AP_IFACE = "ap0"                      # virtual interface for running beside normal Wi-Fi
 CREDS_PATH = os.path.expanduser("~/.config/retro-tv/hotspot.json")
 GRACE_SECONDS = 30.0                  # no network this long -> start (auto mode)
 RETRY_SECONDS = 120.0                 # wait this long after a failed start
 MODES = ("auto", "on", "off")
-MODE_LABELS = {"auto": "AUTO (NO NETWORK)", "on": "ALWAYS ON", "off": "OFF"}
+MODE_LABELS = {"auto": "AUTO", "on": "ALWAYS ON", "off": "OFF"}
 # No 0/O/1/I/L: the password may be read off the screen and typed by hand.
 PASSWORD_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 PASSWORD_LENGTH = 10
@@ -82,7 +88,7 @@ def devices():
 def wifi_device(rows=None):
     """The first Wi-Fi adapter: {"device", "state"} or None."""
     for r in (devices() if rows is None else rows):
-        if r["type"] == "wifi":
+        if r["type"] == "wifi" and r["device"] != AP_IFACE:
             return {"device": r["device"], "state": r["state"]}
     return None
 
@@ -100,6 +106,51 @@ def is_active(rows=None):
     """True while our hotspot is up."""
     return any(r["connection"] == CONNECTION and r["state"].startswith("connected")
                for r in (devices() if rows is None else rows))
+
+
+def ap_device(rows=None):
+    """The virtual AP interface (ap0) if it exists and NetworkManager can use it."""
+    for r in (devices() if rows is None else rows):
+        if r["type"] == "wifi" and r["device"] == AP_IFACE \
+                and r["state"] not in ("unavailable", "unmanaged"):
+            return r["device"]
+    return None
+
+
+def station(rows=None):
+    """The Wi-Fi adapter that is connected to a normal network: {"device", "connection"} or None."""
+    for r in (devices() if rows is None else rows):
+        if r["type"] == "wifi" and r["device"] != AP_IFACE and r["state"].startswith("connected") \
+                and r["connection"] != CONNECTION:
+            return {"device": r["device"], "connection": r["connection"]}
+    return None
+
+
+def active_device(rows=None):
+    """The device our hotspot is running on, or None."""
+    for r in (devices() if rows is None else rows):
+        if r["connection"] == CONNECTION and r["state"].startswith("connected"):
+            return r["device"]
+    return None
+
+
+def sta_channel(device):
+    """(band, channel) the normal Wi-Fi connection is using: ("bg", 6) or ("a", 36).
+    A Wi-Fi chip can only serve one channel at a time for both jobs, so the
+    hotspot has to use the same one."""
+    rc, out, _ = _nmcli(["-t", "-f", "IN-USE,CHAN,FREQ", "device", "wifi", "list", "ifname", device])
+    if rc:
+        return None
+    for line in out.splitlines():
+        f = split_terse(line)
+        if len(f) >= 3 and f[0] == "*":
+            try:
+                chan = int(f[1])
+                freq = int(re.match(r"\d+", f[2]).group(0))
+            except (ValueError, AttributeError):
+                return None
+            return ("a" if freq >= 4000 else "bg", chan)
+    return None
 
 
 def supports_ap(device):
@@ -160,22 +211,36 @@ def wifi_qr_text(ssid, password):
 
 # ------------------------------------------------------------ start / stop
 def start(creds):
-    """Switches the Wi-Fi adapter into hotspot mode. Returns (ok, message)."""
+    """Starts the hotspot. Returns (ok, message).
+
+    With the virtual interface ap0 it runs beside the normal Wi-Fi connection (same
+    channel); without it, it takes the one Wi-Fi radio."""
     rows = devices()
-    adapter = wifi_device(rows)
-    if adapter is None:
-        return False, "NO WI-FI ADAPTER FOUND"
-    device = adapter["device"]
-    if adapter["state"] in ("unavailable", "unmanaged"):
-        return False, ("WI-FI IS %s: SET THE WI-FI COUNTRY (sudo raspi-config) OR SWITCH WI-FI ON"
-                       % adapter["state"].upper())
-    if supports_ap(device) is False:
-        return False, "THIS WI-FI ADAPTER CANNOT MAKE A HOTSPOT"
+    both = ap_device(rows)
+    if both is not None:
+        device, extra = both, []
+        sta = station(rows)
+        channel = sta_channel(sta["device"]) if sta else None
+        if channel:
+            extra = ["802-11-wireless.band", channel[0], "802-11-wireless.channel", str(channel[1])]
+        else:
+            extra = ["802-11-wireless.band", "bg"]
+    else:
+        adapter = wifi_device(rows)
+        if adapter is None:
+            return False, "NO WI-FI ADAPTER FOUND"
+        device = adapter["device"]
+        if adapter["state"] in ("unavailable", "unmanaged"):
+            return False, ("WI-FI IS %s: SET THE WI-FI COUNTRY (sudo raspi-config) OR SWITCH WI-FI ON"
+                           % adapter["state"].upper())
+        if supports_ap(device) is False:
+            return False, "THIS WI-FI ADAPTER CANNOT MAKE A HOTSPOT"
+        extra = ["802-11-wireless.band", "bg"]
     _nmcli(["connection", "delete", CONNECTION])          # a stale profile, if any
     rc, _, err = _nmcli([
         "connection", "add", "type", "wifi", "ifname", device, "con-name", CONNECTION,
         "autoconnect", "no", "ssid", creds["ssid"],
-        "802-11-wireless.mode", "ap", "802-11-wireless.band", "bg",
+        "802-11-wireless.mode", "ap"] + extra + [
         "ipv4.method", "shared", "ipv6.method", "ignore",
         "wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.proto", "rsn",
         "wifi-sec.pairwise", "ccmp", "wifi-sec.group", "ccmp",
@@ -210,11 +275,12 @@ class Policy:
 
     mode "off":  never; switches off a hotspot we made.
     mode "on":   always on.
-    mode "auto": on only after GRACE_SECONDS with no network; off again when a
-                 cable appears. Never while the user is in Settings (they may
-                 be typing a Wi-Fi password), and not again for RETRY_SECONDS
-                 after a failed start (so a missing permission does not loop).
-    "on" also waits while the user is in Settings, so joining a Wi-Fi works.
+    mode "auto": with ap0 (both at once is possible): always on.
+                 Without ap0: on only after GRACE_SECONDS with no network, off
+                 again when a cable appears.
+    Without ap0 the hotspot takes the only radio, so it waits while the user is
+    in Settings (they may be typing a Wi-Fi password) - even in "on". After a
+    failed start it waits RETRY_SECONDS (so a missing permission does not loop).
     """
 
     def __init__(self, grace=GRACE_SECONDS, retry=RETRY_SECONDS):
@@ -229,12 +295,17 @@ class Policy:
     def reset(self):
         self._since = None
 
-    def decide(self, now, mode, network, active, suppress=False, force=False):
+    def decide(self, now, mode, network, active, suppress=False, force=False, concurrent=False):
         """-> "start", "stop" or None. force = the user has just chosen this
-        mode, so act now: it ignores the Settings pause and the retry wait."""
+        mode, so act now: it ignores the Settings pause and the retry wait.
+        concurrent = the hotspot can run beside normal Wi-Fi (ap0 exists): then
+        AUTO means always on, and Settings never needs to pause it."""
         mode = clean_mode(mode)
         if mode == "off":
             return "stop" if active else None
+        if concurrent:
+            suppress = False
+            mode = "on"
         if suppress and not force:
             self._since = None
             return None
@@ -242,7 +313,7 @@ class Policy:
             if active:
                 return None
             return "start" if (force or self._can_retry(now)) else None
-        # auto
+        # auto, one radio
         if network:
             self._since = None
             return "stop" if active else None

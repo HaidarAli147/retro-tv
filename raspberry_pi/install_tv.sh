@@ -210,6 +210,36 @@ row:selected .item, row:selected .item-sub { color: #ffff00; }
     font-weight: 700;
     padding: 10px 14px 4px 14px;
 }
+.hint-title {
+    color: #ffff00;
+    background-color: #000080;
+    font-family: monospace;
+    font-size: 20px;
+    font-weight: 700;
+    padding: 6px 14px;
+}
+.hint-line {
+    color: #000000;
+    font-family: monospace;
+    font-size: 20px;
+    font-weight: 700;
+    padding: 2px 14px;
+}
+.hint-code {
+    color: #ffff00;
+    background-color: #000080;
+    font-family: monospace;
+    font-size: 34px;
+    font-weight: 700;
+    padding: 4px 14px;
+    margin: 4px 14px;
+}
+.hint-foot {
+    color: #404040;
+    font-family: monospace;
+    font-size: 15px;
+    padding: 4px 14px 8px 14px;
+}
 .seg {
     min-width: 16px;
     min-height: 34px;
@@ -1015,6 +1045,59 @@ class VolumeOSD(Gtk.Window):
         self.hide()
 
 
+class RemoteHint(Gtk.Window):
+    """Pop-up that tells people how to connect a phone: the TV's Wi-Fi name and
+    password, the address and the 6-digit code. Same kind of window as the volume
+    bar (always on top, never takes the keyboard, so mpv's video cannot hide it)."""
+
+    def __init__(self):
+        super().__init__(type=Gtk.WindowType.POPUP)
+        self.set_keep_above(True)
+        self.set_accept_focus(False)
+        self.set_focus_on_map(False)
+        self.get_style_context().add_class("osd")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.add(box)
+        self.title = Gtk.Label(label=" PHONE REMOTE ", xalign=0)
+        self.title.get_style_context().add_class("hint-title")
+        box.pack_start(self.title, False, False, 0)
+        self.wifi = Gtk.Label(label="", xalign=0)
+        self.wifi.get_style_context().add_class("hint-line")
+        box.pack_start(self.wifi, False, False, 0)
+        self.address = Gtk.Label(label="", xalign=0)
+        self.address.get_style_context().add_class("hint-line")
+        box.pack_start(self.address, False, False, 0)
+        self.code = Gtk.Label(label="", xalign=0)
+        self.code.get_style_context().add_class("hint-code")
+        self.code.set_halign(Gtk.Align.START)
+        box.pack_start(self.code, False, False, 0)
+        foot = Gtk.Label(label="BACK = HIDE", xalign=0)
+        foot.get_style_context().add_class("hint-foot")
+        box.pack_start(foot, False, False, 0)
+
+    def show_info(self, wifi_lines, address, code):
+        self.wifi.set_text("\n".join(wifi_lines))
+        self.wifi.set_visible(bool(wifi_lines))
+        self.address.set_text("OPEN:  " + address)
+        self.code.set_text("CODE  " + code)
+        self.show_all()
+        self.wifi.set_visible(bool(wifi_lines))
+        screen = self.get_screen()
+        w, _h = self.get_size()
+        self.move(max(0, screen.get_width() - w - px(40)), px(40))
+
+    def dismiss(self):
+        self.hide()
+
+
+def hint_wanted(has_hotspot, mode, remote_running, screen, connected, dismissed):
+    """Should the connect-a-phone pop-up be on screen? Only while no phone is
+    connected, never on the PHONE REMOTE screen (that shows the same things in
+    full), and not after BACK was pressed (until a phone has connected)."""
+    return bool(has_hotspot and remote_running and mode != "off"
+                and screen != "REMOTE" and connected == 0 and not dismissed)
+
+
 class Player:
     """One mpv process drawing into our video area.
 
@@ -1142,6 +1225,7 @@ class TVWindow(Gtk.Window):
         self.webview = None
         self.current_web_key = None    # which web app's URL is loaded
         self.osd = VolumeOSD()
+        self.connect_hint = RemoteHint()
         self.volume = START_VOLUME
         self.muted = False
         self.logo_slots = []
@@ -2212,10 +2296,17 @@ class TVWindow(Gtk.Window):
         self._hs_busy = False
         self._hs_force = False
         self._hs_message = ""
+        self._hs_concurrent = False       # hotspot is running beside the normal Wi-Fi right now
+        self._hs_concurrent_ok = False    # ap0 exists, so running both is possible
+        self._hs_network = False          # a normal network (Wi-Fi or cable) is connected
+        self._hs_known = False            # NetworkManager has answered at least once
+        self._hint_dismissed = False
+        self._hint_key = None
         self._hs_workers = ThreadPoolExecutor(max_workers=1)
         self._show_hotspot_mode()
         if hotspot is not None and self.remote is not None and not IS_WINDOWS:
             GLib.timeout_add_seconds(5, self._hotspot_tick)
+            GLib.timeout_add_seconds(2, self._hint_update)
 
     def _show_hotspot_mode(self):
         if hotspot is None or self.remote is None or IS_WINDOWS:
@@ -2231,6 +2322,7 @@ class TVWindow(Gtk.Window):
         self._prefs["hotspot"] = self._hs_mode
         self._save_prefs()
         self._hs_message = ""
+        self._hint_dismissed = False     # a new choice: show the pop-up again if it applies
         self._hs_force = True            # act on the new choice at once, even in Settings
         self._show_hotspot_mode()
         self._hotspot_tick()
@@ -2246,7 +2338,8 @@ class TVWindow(Gtk.Window):
             rows = hotspot.devices()
             # known is False when NetworkManager gave no answer at all (not
             # installed, or this machine uses something else): then do nothing.
-            return hotspot.has_network(rows), hotspot.is_active(rows), bool(rows)
+            return (hotspot.has_network(rows), hotspot.is_active(rows), bool(rows),
+                    hotspot.ap_device(rows) is not None, hotspot.active_device(rows))
         task = self._hs_workers.submit(observe)
         task.add_done_callback(lambda t: GLib.idle_add(self._hotspot_decide, t)
                                if not self._closed else None)
@@ -2254,21 +2347,25 @@ class TVWindow(Gtk.Window):
 
     def _hotspot_decide(self, task):
         try:
-            network, active, known = task.result()
+            network, active, known, can_both, device = task.result()
         except Exception:
             self._hs_busy = False
             return False
+        self._hs_known = known
         if not known:
             self._hs_busy = False
             return False
         changed = active != self._hs_active
         self._hs_active = active
+        self._hs_network = network
+        self._hs_concurrent_ok = can_both
+        self._hs_concurrent = bool(active and device == hotspot.AP_IFACE)
         if changed and not active and self.remote is not None:
             self.remote.host_override = None      # someone else switched it off
         force, self._hs_force = self._hs_force, False
         action = self._hs_policy.decide(
             time.monotonic(), self._hs_mode, network, active,
-            suppress=(self.screen == "SETTINGS"), force=force)
+            suppress=(self.screen == "SETTINGS"), force=force, concurrent=can_both)
         if action == "start":
             self._hotspot_run(True)
         elif action == "stop":
@@ -2286,17 +2383,18 @@ class TVWindow(Gtk.Window):
                 return None
             creds = hotspot.load_credentials()
             ok, message = hotspot.start(creds)
-            adapter = hotspot.wifi_device()
-            addr = hotspot.address(adapter["device"]) if ok and adapter else None
-            return creds, ok, message, addr
+            device = hotspot.active_device() if ok else None
+            addr = hotspot.address(device) if device else None
+            return creds, ok, message, addr, device
         def done(task):
             try:
                 result = task.result()
             except Exception:
                 result = None
             if start and result is not None:
-                creds, ok, message, addr = result
+                creds, ok, message, addr, device = result
                 self._hs_active = ok
+                self._hs_concurrent = bool(ok and device == hotspot.AP_IFACE)
                 if ok:
                     self._hs_creds = creds
                     self._hs_message = ""
@@ -2311,6 +2409,7 @@ class TVWindow(Gtk.Window):
                 self._hs_policy.failed(time.monotonic())
             else:
                 self._hs_active = False
+                self._hs_concurrent = False
                 self._hs_policy.reset()
                 if self.remote is not None:
                     self.remote.host_override = None
@@ -2319,6 +2418,29 @@ class TVWindow(Gtk.Window):
             return False
         task = self._hs_workers.submit(work)
         task.add_done_callback(lambda t: GLib.idle_add(done, t) if not self._closed else None)
+
+    def _hint_update(self):
+        """Every 2 s: show the connect-a-phone pop-up while no phone is connected."""
+        if self._closed:
+            return False
+        if self.screen == "REMOTE":
+            self._hint_dismissed = True       # they are looking at the full version
+        connected = self.remote.connected_devices() if self.remote is not None else 0
+        if connected:
+            self._hint_dismissed = False      # a phone came: show it again if it later leaves
+        if hint_wanted(hotspot is not None and self._hs_known, self._hs_mode, self.remote is not None,
+                       self.screen, connected, self._hint_dismissed):
+            wifi = []
+            if self._hs_active and self._hs_creds:
+                wifi = ["JOIN WI-FI:  " + self._hs_creds["ssid"],
+                        "PASSWORD:    " + self._hs_creds["password"]]
+            info = (tuple(wifi), self.remote.url(), self.remote.pairing.code)
+            if not self.connect_hint.get_visible() or info != self._hint_key:
+                self._hint_key = info
+                self.connect_hint.show_info(wifi, info[1], info[2])
+        elif self.connect_hint.get_visible():
+            self.connect_hint.dismiss()
+        return True
 
     def _hotspot_changed(self):
         if self.remote is not None and not self._closed:
@@ -2448,9 +2570,13 @@ class TVWindow(Gtk.Window):
         if self.remote_qr.get_pixbuf() is None:
             lines.append("NO QR PICTURE: sudo apt install python3-qrcode")
         if self._hs_active:
-            lines.append("TV IS ON ITS OWN WI-FI: NO INTERNET UNTIL YOU JOIN A WI-FI IN SETTINGS")
+            lines.append("TV IS ON WI-FI AND HAS ITS OWN HOTSPOT" if self._hs_concurrent else
+                         "TV IS ON ITS OWN WI-FI: NO INTERNET UNTIL YOU JOIN A WI-FI IN SETTINGS")
         elif self._hs_message:
             lines.append(self._hs_message)
+        elif hotspot is not None and self._hs_mode == "auto" and self._hs_network \
+                and not self._hs_concurrent_ok:
+            lines.append("HOTSPOT WAITS: ONE WI-FI RADIO. TO RUN BOTH: bash install_hotspot_concurrent.sh")
         elif hotspot is not None and self._hs_mode == "auto" and \
                 "127.0.0.1" in self.remote_url.get_text():
             lines.append("NO NETWORK: THE TV WILL START ITS OWN WI-FI IN A MOMENT")
@@ -2743,8 +2869,9 @@ class TVWindow(Gtk.Window):
 
     def _wifi_job(self,args,callback):
         def work():
-            if hotspot is not None and self._hs_active:
+            if hotspot is not None and self._hs_active and not self._hs_concurrent:
                 # One Wi-Fi radio: the hotspot has to go before a network can be joined.
+                # (Running beside the normal Wi-Fi on ap0, it can stay.)
                 hotspot.stop()
                 self._hs_active=False
             try:
@@ -2987,6 +3114,11 @@ class TVWindow(Gtk.Window):
         # whatever speaker is actually connected, not just this app's mpv
         # instance. See rpi_bridge.py.
 
+        if key == Gdk.KEY_Escape and self.connect_hint.get_visible():
+            self._hint_dismissed = True       # BACK hides the connect-a-phone pop-up first
+            self.connect_hint.dismiss()
+            return True
+
         if key == Gdk.KEY_Escape:
             self._back_step()
             return True
@@ -3152,6 +3284,8 @@ class TVWindow(Gtk.Window):
         self.player.stop()
         self.osd.dismiss()
         self.osd.destroy()
+        self.connect_hint.dismiss()
+        self.connect_hint.destroy()
         Gtk.main_quit()
 
 

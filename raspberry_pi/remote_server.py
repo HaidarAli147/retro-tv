@@ -44,6 +44,7 @@ WRONG_WINDOW = 60.0      # ... in this many seconds
 GLOBAL_WRONG_LIMIT = 20  # wrong codes from ALL phones per window -> new code
 HANDLER_TIMEOUT = 10     # seconds a phone connection may sit idle
 MAX_TOKENS = 20
+DEVICE_WINDOW = 120.0    # a phone counts as connected if it was heard from this recently
 
 # Button name on the phone -> evdev key name (same keys as the Arduino bridge).
 KEY_NAMES = {
@@ -86,6 +87,7 @@ class Pairing:
         self.code = code or self._new_code()
         self._clock = clock
         self._tokens = []          # oldest first
+        self._seen = {}            # token -> when that phone was last heard from
         self._wrong = {}           # ip -> [times of wrong attempts]
         self._all_wrong = []       # times of wrong attempts from anyone
         self._lock = threading.Lock()
@@ -115,14 +117,28 @@ class Pairing:
                 return None
             token = secrets.token_urlsafe(24)
             self._tokens.append(token)
+            self._seen[token] = now
+            for old in self._tokens[:-MAX_TOKENS]:
+                self._seen.pop(old, None)
             del self._tokens[:-MAX_TOKENS]
             return token
 
     def valid(self, token):
+        """True for a paired phone's token; also notes that this phone is here now."""
         if not token:
             return False
         with self._lock:
-            return any(_same(token, t) for t in self._tokens)
+            for t in self._tokens:
+                if _same(token, t):
+                    self._seen[t] = self._clock()
+                    return True
+            return False
+
+    def active(self, window=DEVICE_WINDOW):
+        """How many paired phones were heard from within `window` seconds."""
+        with self._lock:
+            now = self._clock()
+            return sum(1 for t in self._tokens if now - self._seen.get(t, -1e9) <= window)
 
     def count(self):
         with self._lock:
@@ -443,6 +459,10 @@ class RemoteServer:
         close = getattr(self.input, "close", None)
         if close:
             close()
+
+    def connected_devices(self, window=DEVICE_WINDOW):
+        """Phones that are paired AND recently active (the page pings every 15 s)."""
+        return self.pairing.active(window)
 
     def url(self):
         return "http://%s:%d/" % (self.host_override or lan_ip(), self.port)

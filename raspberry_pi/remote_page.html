@@ -166,6 +166,18 @@ footer { text-align: center; color: var(--dim); font-size: 11px; letter-spacing:
     } catch (_) { say('Cannot reach the TV. Is this phone on the same Wi-Fi?', true); }
   }
 
+  // Heartbeat: tells the TV this phone is still here (it hides its pop-up while a phone is connected).
+  async function heartbeat() {
+    if (!token || document.hidden) return;
+    try {
+      const r = await fetch('/api/status', { headers: { 'X-Remote-Token': token } });
+      const s = await r.json();
+      if (!s.paired) lost();
+    } catch (_) { /* the next command shows the error */ }
+  }
+  setInterval(heartbeat, 15000);
+  document.addEventListener('visibilitychange', heartbeat);
+
   let busy = 0;
   async function send(cmd) {
     if (!token) { setPaired(false); return false; }
