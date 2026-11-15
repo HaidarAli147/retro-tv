@@ -3,59 +3,74 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<meta name="theme-color" content="#7851A9">
+<meta name="theme-color" content="#008080">
 <title>Retro TV Remote</title>
 <style>
+/* Same look as the TV app (tv.py): teal surround, silver raised panels with a white
+   top/left edge and a dark bottom/right edge, navy header, navy + yellow for anything
+   pressed or selected, bold monospace. Change the colours here, in one place. */
 :root {
-  --purple: #7851A9;
-  --purple-deep: #4a2f6e;
-  --ink: #120b1c;
-  --panel: #1d1229;
-  --line: #3a2752;
-  --text: #f4eefc;
-  --dim: #b7a6cf;
-  --yellow: #ffe94a;
-  --danger: #ff6b6b;
+  --teal: #008080;
+  --silver: #c0c0c0;
+  --navy: #000080;
+  --light: #ffffff;
+  --shadow: #404040;
+  --black: #000000;
+  --yellow: #ffff00;
+  --error: #800000;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html, body { margin: 0; background: var(--ink); color: var(--text);
-  font-family: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace; }
+html, body { margin: 0; background: var(--teal); color: var(--black);
+  font-family: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace; font-weight: 700; }
 body { min-height: 100vh; display: flex; justify-content: center; }
 main { width: 100%; max-width: 440px; padding: 14px 16px 28px; }
 header { display: flex; align-items: center; justify-content: space-between;
-  border: 2px solid var(--purple); background: var(--purple); color: #fff;
-  padding: 10px 12px; margin-bottom: 14px; }
+  background: var(--navy); color: var(--light); padding: 10px 12px; margin-bottom: 14px; }
 header h1 { font-size: 16px; letter-spacing: .12em; margin: 0; }
-#dot { width: 10px; height: 10px; border-radius: 50%; background: var(--danger); }
-#dot.on { background: #7dff9b; box-shadow: 0 0 8px #7dff9b; }
-.panel { border: 2px solid var(--line); background: var(--panel); padding: 12px; margin-bottom: 12px; }
-.label { font-size: 11px; letter-spacing: .14em; color: var(--dim); margin: 0 0 8px; }
-button { font: inherit; color: var(--text); background: var(--purple-deep);
-  border: 2px solid var(--purple); border-radius: 0; min-height: 52px;
-  font-size: 16px; font-weight: 700; letter-spacing: .06em; touch-action: manipulation;
+#dot { width: 12px; height: 12px; border-radius: 50%; background: #ff3b3b;
+  border: 2px solid var(--light); }
+#dot.on { background: #35ff6b; }
+.panel { background: var(--silver); padding: 12px; margin-bottom: 12px;
+  border-top: 3px solid var(--light); border-left: 3px solid var(--light);
+  border-bottom: 3px solid var(--shadow); border-right: 3px solid var(--shadow); }
+.label { font-size: 12px; letter-spacing: .14em; color: var(--shadow); margin: 0 0 8px; }
+button { font: inherit; color: var(--black); background: var(--silver); border-radius: 0;
+  border-top: 2px solid var(--light); border-left: 2px solid var(--light);
+  border-bottom: 2px solid var(--shadow); border-right: 2px solid var(--shadow);
+  min-height: 52px; font-size: 16px; letter-spacing: .06em; touch-action: manipulation;
   user-select: none; -webkit-user-select: none; }
-button:active, button.pressed { background: var(--purple); color: var(--yellow); }
+button:active, button.pressed { background: var(--navy); color: var(--yellow);
+  border-top-color: var(--shadow); border-left-color: var(--shadow);
+  border-bottom-color: var(--light); border-right-color: var(--light); }
 .dpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .dpad button { min-height: 72px; font-size: 24px; }
-.dpad .ok { background: var(--purple); font-size: 18px; }
+.dpad .ok { background: var(--navy); color: var(--yellow); font-size: 18px; }
+.dpad .ok:active, .dpad .ok.pressed { background: var(--yellow); color: var(--navy); }
 .row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
 .row2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 8px; }
-#pad { height: 210px; border: 2px dashed var(--purple); background:
-  repeating-linear-gradient(0deg, transparent 0 23px, #2a1b3c 23px 24px),
-  repeating-linear-gradient(90deg, transparent 0 23px, #2a1b3c 23px 24px);
+#pad { height: 210px; background-color: var(--black); background-image:
+  repeating-linear-gradient(0deg, transparent 0 23px, #1d1d1d 23px 24px),
+  repeating-linear-gradient(90deg, transparent 0 23px, #1d1d1d 23px 24px);
+  border-top: 3px solid var(--shadow); border-left: 3px solid var(--shadow);
+  border-bottom: 3px solid var(--light); border-right: 3px solid var(--light);
   touch-action: none; display: flex; align-items: center; justify-content: center;
-  color: var(--dim); font-size: 12px; letter-spacing: .14em; text-align: center; padding: 10px; }
-#pad.active { border-style: solid; color: var(--yellow); }
+  color: var(--silver); font-size: 12px; letter-spacing: .14em; text-align: center; padding: 10px; }
+#pad.active { color: var(--yellow); }
 .typing { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
-input { font: inherit; font-size: 16px; color: var(--ink); background: #fff;
-  border: 2px solid var(--purple); border-radius: 0; padding: 12px; min-width: 0; }
+input { font: inherit; font-size: 16px; color: var(--black); background: var(--light); border-radius: 0;
+  border-top: 2px solid var(--shadow); border-left: 2px solid var(--shadow);
+  border-bottom: 2px solid var(--light); border-right: 2px solid var(--light);
+  padding: 12px; min-width: 0; }
+input:focus { outline: 3px solid var(--navy); outline-offset: 0; }
 #msg { min-height: 20px; font-size: 13px; color: var(--yellow); margin: 0 0 10px; }
-#msg.err { color: var(--danger); }
+#msg.err { color: var(--light); background: var(--error); padding: 4px 8px; }
 #pairing { display: none; }
-#pairing p { color: var(--dim); font-size: 14px; line-height: 1.5; }
+#pairing p { font-size: 14px; line-height: 1.5; }
+#pairing p.label { font-size: 12px; line-height: normal; }
 body.unpaired #pairing { display: block; }
 body.unpaired #controls { display: none; }
-footer { text-align: center; color: var(--dim); font-size: 11px; letter-spacing: .1em; margin-top: 18px; }
+footer { text-align: center; background: var(--silver); color: var(--black); font-size: 11px;
+  letter-spacing: .1em; margin-top: 18px; padding: 6px 10px; border-top: 2px solid var(--shadow); }
 </style>
 </head>
 <body class="unpaired">

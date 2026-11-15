@@ -270,7 +270,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         html = page.decode()
         self.assertIn("/api/pair", html)
-        self.assertIn("#7851A9".lower(), html.lower())
+        self.assertIn("#008080", html.lower())  # TV teal
+        self.assertIn("#000080", html.lower())  # TV navy
         self.assertNotRegex(html, r'(src|href)\s*=\s*["\']https?://')
         self.assertNotIn("POWER", html)
 
