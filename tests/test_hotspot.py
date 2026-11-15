@@ -536,6 +536,51 @@ class HintTests(unittest.TestCase):
         self.assertFalse(win.connect_hint.visible)
 
 
+class CapabilityCheckTests(unittest.TestCase):
+    """install_hotspot_concurrent.sh --check-combos reads `iw phy .. info` text on stdin."""
+    SCRIPT = str(pathlib.Path(__file__).resolve().parents[1] / "raspberry_pi" / "install_hotspot_concurrent.sh")
+
+    def allows(self, text):
+        import subprocess
+        return subprocess.run(["bash", self.SCRIPT, "--check-combos"], input=text, text=True,
+                              capture_output=True).returncode == 0
+
+    def test_the_real_raspberry_pi_4_output_that_was_wrongly_rejected(self):
+        # iw wraps each long combination onto a second line; "total <= 4" is on that line.
+        pi4 = """        valid interface combinations:
+                 * #{ managed } <= 2, #{ P2P-device } <= 1, #{ P2P-client, P2P-GO } <= 1,
+                   total <= 3, #channels <= 2
+                 * #{ managed } <= 1, #{ AP } <= 1, #{ P2P-client } <= 1, #{ P2P-device } <= 1,
+                   total <= 4, #channels <= 1
+        Device supports SAE with AUTHENTICATE command
+"""
+        self.assertTrue(self.allows(pi4))
+
+    def test_wrapped_lines_without_ap_are_still_rejected(self):
+        only_station = """        valid interface combinations:
+                 * #{ managed } <= 2, #{ P2P-device } <= 1, #{ P2P-client, P2P-GO } <= 1,
+                   total <= 3, #channels <= 2
+        Device supports SAE with AUTHENTICATE command
+"""
+        self.assertFalse(self.allows(only_station))
+
+    def test_single_line_forms_in_either_order(self):
+        self.assertTrue(self.allows("* #{ managed } <= 1, #{ AP, P2P-client, P2P-GO } <= 1, #{ P2P-device } <= 1, total <= 3, #channels <= 2\n"))
+        self.assertTrue(self.allows("* #{ AP } <= 1, #{ managed } <= 1, total <= 2, #channels <= 1\n"))
+
+    def test_chips_that_can_only_do_one_thing_at_a_time_are_rejected(self):
+        self.assertFalse(self.allows("* #{ managed, AP } <= 1, total <= 1, #channels <= 1\n"))
+        self.assertFalse(self.allows("* #{ managed } <= 1, #{ P2P-device } <= 1, total <= 2, #channels <= 1\n"))
+        self.assertFalse(self.allows("* #{ IBSS, AP, mesh point } <= 1, total <= 1, #channels <= 1\n"))
+        self.assertFalse(self.allows(""))
+
+    def test_a_combination_is_not_mixed_up_with_its_neighbour(self):
+        # "managed" in one combination and "AP" in the next must not add up to a yes
+        text = ("* #{ managed } <= 2, total <= 3, #channels <= 2\n"
+                "* #{ AP } <= 1, total <= 1, #channels <= 1\n")
+        self.assertFalse(self.allows(text))
+
+
 class WindowLogicTests(unittest.TestCase):
     """The TVWindow methods run on a stand-in object: no display needed."""
 

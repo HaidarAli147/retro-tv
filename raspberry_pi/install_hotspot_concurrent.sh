@@ -22,6 +22,25 @@ RULE=/etc/udev/rules.d/70-retro-tv-ap0.rules
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+# Reads `iw phy ... info` text on stdin; exit 0 if one "valid interface combination"
+# allows managed + AP at once (total >= 2). Each combination starts with "*" and may
+# continue on the next line(s).
+combos_allow_both() {
+    awk '
+        function check() {
+            if (rec ~ /managed/ && rec ~ /AP/ && match(rec, /total <= [0-9]+/) &&
+                substr(rec, RSTART + 9, RLENGTH - 9) + 0 >= 2) found = 1
+        }
+        /^[[:space:]]*\*/ { check(); rec = $0; next }
+        { rec = rec " " $0 }
+        END { check(); exit !found }'
+}
+
+if [ "${1:-}" = "--check-combos" ]; then      # used by the tests: reads iw output on stdin
+    combos_allow_both
+    exit $?
+fi
+
 if [ "$(id -u)" -eq 0 ]; then
     die "Run this as your normal user, not with sudo."
 fi
@@ -61,8 +80,9 @@ INFO="$("$IW" phy "$PHY" info 2>/dev/null)"
 echo "$INFO" | grep -q '^[[:space:]]*\* AP$' || die "This adapter cannot act as a hotspot (no AP mode). Nothing was changed."
 COMBOS="$(echo "$INFO" | sed -n '/valid interface combinations/,/Device supports/p')"
 echo "$COMBOS" | grep -v "Device supports" | sed 's/^/    /'
-# one "valid combination" line must mention both managed (normal Wi-Fi) and AP, with room for 2+
-if ! echo "$COMBOS" | awk '/managed/ && /AP/ { if (match($0, /total <= [0-9]+/)) { if (substr($0, RSTART + 9, RLENGTH - 9) + 0 >= 2) f = 1 } } END { exit !f }'; then
+# one combination must allow normal Wi-Fi (managed) and AP together, with room for 2+
+# (iw wraps each long combination over two lines, so the lines are joined first)
+if ! echo "$COMBOS" | combos_allow_both; then
     die "This adapter cannot be a hotspot and join a Wi-Fi at the same time. Nothing was changed. The TV will keep using the single-radio mode (hotspot only when there is no network)."
 fi
 echo "OK: the adapter allows both."
