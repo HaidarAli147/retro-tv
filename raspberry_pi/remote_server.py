@@ -153,7 +153,7 @@ def _same(given, expected):
 
 def is_local_host_header(host):
     """Blocks DNS-rebinding: the address bar must hold an IP or 'localhost',
-    never someone's domain name."""
+    never someone's domain name (the TV's own retrotv.remote is the one exception)."""
     if not host:
         return True                       # HTTP/1.0 clients may omit it
     host = host.strip()
@@ -161,7 +161,8 @@ def is_local_host_header(host):
         name = host[1:host.find("]")] if "]" in host else ""
     else:
         name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
-    if name.lower() == "localhost":
+    if name.lower() in ("localhost", "retrotv.remote"):
+        # retrotv.remote only resolves through the TV's own hotspot DNS
         return True
     try:
         ipaddress.ip_address(name)

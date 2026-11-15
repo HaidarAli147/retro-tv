@@ -703,3 +703,35 @@ class WindowLogicTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FriendlyNameTests(unittest.TestCase):
+    """http://retrotv.remote on the TV's hotspot (needs install_hotspot_name.sh)."""
+    def _file(self, text):
+        import tempfile
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "retro-tv.conf")
+        with open(p, "w") as fh:
+            fh.write(text)
+        return p
+
+    def test_name_used_only_when_dns_file_exists_and_address_matches(self):
+        good = self._file("address=/retrotv.remote/10.42.0.1\n")
+        self.assertEqual(hs.hostname_for("10.42.0.1", good), "retrotv.remote")
+        self.assertIsNone(hs.hostname_for("10.42.1.1", good))        # name would point elsewhere
+        self.assertIsNone(hs.hostname_for("10.42.0.1", "/nonexistent/x.conf"))
+        self.assertIsNone(hs.hostname_for("10.42.0.1", self._file("address=/other/10.42.0.1\n")))
+        self.assertIsNone(hs.hostname_for(None, good))
+
+    def test_server_accepts_only_that_name_besides_ips(self):
+        self.assertTrue(rs.is_local_host_header("retrotv.remote:8080"))
+        self.assertTrue(rs.is_local_host_header("RetroTV.Remote"))
+        self.assertFalse(rs.is_local_host_header("evil.example.com:8080"))
+        self.assertFalse(rs.is_local_host_header("retrotv.remote.evil.com"))
+
+    def test_url_and_qr_use_the_name(self):
+        server = rs.RemoteServer(input_backend=SimpleNamespace(available=False))
+        server.port = 8080
+        server.host_override = "retrotv.remote"
+        self.assertEqual(server.url(), "http://retrotv.remote:8080/")
+        self.assertRegex(server.qr_link(), r"^http://retrotv\.remote:8080/#code=\d{6}$")

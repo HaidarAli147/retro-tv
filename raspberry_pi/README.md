@@ -286,6 +286,16 @@ Manual test without waiting: set HOTSPOT to **ALWAYS ON**, wait ~5 s, look for
 `RetroTV-XXXX` on your phone. Check from a terminal: `nmcli connection show --active`.
 Switch off: set HOTSPOT to **OFF**, or `nmcli connection down RetroTV-Hotspot`.
 
+### Friendly name on the hotspot: `retrotv.remote`
+
+`bash install_hotspot_name.sh` (one sudo step, `--remove` undoes it) teaches the
+hotspot's own DNS that `retrotv.remote` is the TV (`10.42.0.1`). After restarting the TV
+app the pop-up and QR show `http://retrotv.remote:<port>/`. It only works for phones
+joined to the TV's hotspot; on your home Wi-Fi the router doesn't know the name and the
+TV keeps showing the number address. Type the full address with `http://` (the name isn't
+a real domain ending, so some phone browsers would otherwise search for it), and turn off
+the phone's "Private DNS" if the name doesn't open.
+
 ## Sound output (Settings)
 
 Settings now has **SOUND OUTPUT** at the top. Press **LEFT / RIGHT** (joystick,

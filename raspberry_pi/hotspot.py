@@ -162,6 +162,26 @@ def supports_ap(device):
     return True if answer == "yes" else False if answer == "no" else None
 
 
+HOSTNAME = "retrotv.remote"
+HOSTNAME_FILE = "/etc/NetworkManager/dnsmasq-shared.d/retro-tv.conf"
+HOTSPOT_ADDRESS = "10.42.0.1"
+
+
+def hostname_for(addr, path=HOSTNAME_FILE):
+    """The friendly name to show instead of the number address: only when the one-time
+    sudo step (install_hotspot_name.sh) taught the hotspot's DNS that name AND the TV
+    really has the address the name points to. Otherwise None (show the number)."""
+    if addr != HOTSPOT_ADDRESS:
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    want = "address=/%s/%s" % (HOSTNAME, HOTSPOT_ADDRESS)
+    return HOSTNAME if any(l.strip() == want for l in text.splitlines()) else None
+
+
 def address(device):
     """The TV's own address while the hotspot is up (normally 10.42.0.1)."""
     rc, out, _ = _nmcli(["-g", "IP4.ADDRESS", "device", "show", device])

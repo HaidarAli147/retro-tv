@@ -2399,7 +2399,7 @@ class TVWindow(Gtk.Window):
                     self._hs_creds = creds
                     self._hs_message = ""
                     if self.remote is not None:
-                        self.remote.host_override = addr or "10.42.0.1"
+                        self.remote.host_override = hotspot.hostname_for(addr) or addr or hotspot.HOTSPOT_ADDRESS
                     self._hs_policy.reset()
                 else:
                     self._hs_message = message
