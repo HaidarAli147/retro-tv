@@ -5,7 +5,7 @@
 <rect x="110" y="62" width="980" height="306" rx="12" fill="#c0c0c0" stroke="#ffffff" stroke-width="10"/>
 <path d="M120 72h960v286H120z" fill="none" stroke="#404040" stroke-width="6"/>
 <rect x="150" y="96" width="710" height="232" rx="4" fill="#000080" stroke="#404040" stroke-width="8"/>
-<text x="505" y="169" text-anchor="middle" fill="#ffff00" font-family="monospace" font-size="38" font-weight="700">BRACK STUDY TV</text>
+<text x="505" y="169" text-anchor="middle" fill="#ffff00" font-family="monospace" font-size="38" font-weight="700">APPEND HUB TV</text>
 <text x="505" y="224" text-anchor="middle" fill="#ffffff" font-family="monospace" font-size="24">LIVE TV  ·  TOD  ·  APPS</text>
 <rect x="318" y="256" width="374" height="42" fill="#c0c0c0" stroke="#ffffff" stroke-width="3"/>
 <text x="505" y="285" text-anchor="middle" fill="#000080" font-family="monospace" font-size="20" font-weight="700">A DIY SMART TV PROJECT</text>
